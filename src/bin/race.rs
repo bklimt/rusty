@@ -1,14 +1,18 @@
 use std::{
     mem::swap,
+    sync::mpsc::{channel, Sender},
     thread::{sleep, spawn},
     time::Duration,
 };
 
 use rand::random;
 
-fn print_after(i: usize, after: Duration) {
+fn print_after(i: usize, after: Duration, sender: Sender<usize>) {
     sleep(after);
-    println!("hello {i}");
+    println!("sending {i}");
+    if let Err(err) = sender.send(i) {
+        println!("error sending: {}", err);
+    }
 }
 
 fn shuffle(v: &mut Vec<i32>) {
@@ -26,12 +30,20 @@ fn main() {
     let mut v = (1..=n).collect::<Vec<i32>>();
     shuffle(&mut v);
 
+    let (sender, receiver) = channel::<usize>();
+
     let mut handles = Vec::new();
     for (i, r) in v.iter().enumerate() {
         let duration = Duration::from_secs(*r as u64);
         println!("thread {i} will finish after {} seconds.", r);
-        let handle = spawn(move || print_after(i, duration));
+        let sender = sender.clone();
+        let handle = spawn(move || print_after(i, duration, sender));
         handles.push(handle);
+    }
+    drop(sender);
+
+    while let Ok(i) = receiver.recv() {
+        println!("received {i}");
     }
 
     for handle in handles {
