@@ -1,13 +1,9 @@
-use std::{
-    mem::swap,
-    thread::{sleep, spawn},
-    time::Duration,
-};
-
 use rand::random;
+use std::{io::Result, mem::swap, time::Duration};
+use tokio::{spawn, time::sleep};
 
-fn print_after(i: usize, after: Duration) {
-    sleep(after);
+async fn print_after(i: usize, after: Duration) {
+    sleep(after).await;
     println!("hello {i}");
 }
 
@@ -21,7 +17,8 @@ fn shuffle(v: &mut Vec<i32>) {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<()> {
     let n = 10;
     let mut v = (1..=n).collect::<Vec<i32>>();
     shuffle(&mut v);
@@ -30,11 +27,13 @@ fn main() {
     for (i, r) in v.iter().enumerate() {
         let duration = Duration::from_secs(*r as u64);
         println!("thread {i} will finish after {} seconds.", r);
-        let handle = spawn(move || print_after(i, duration));
+        let handle = spawn(async move { print_after(i, duration).await });
         handles.push(handle);
     }
 
     for handle in handles {
-        handle.join().unwrap();
+        handle.await?;
     }
+
+    Ok(())
 }
