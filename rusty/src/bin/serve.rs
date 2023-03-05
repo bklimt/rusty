@@ -1,6 +1,12 @@
 extern crate rusty;
 
+use serde::Serialize;
 use warp::Filter;
+
+#[derive(Serialize)]
+struct S {
+    i: i32,
+}
 
 #[tokio::main]
 async fn main() {
