@@ -2,7 +2,7 @@ use zombie::Serialize;
 
 #[derive(Serialize)]
 struct S {
-    #[id]
+    #[id(1)]
     x: i32,
 }
 
