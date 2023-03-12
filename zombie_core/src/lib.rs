@@ -163,7 +163,7 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
                 .ok_or_else(|| anyhow!("no ident for field"))?
                 .clone();
 
-            let type_attr = field.attrs.iter().find(|attr| attr.path.is_ident("typ"));
+            let type_attr = field.attrs.iter().find(|attr| attr.path.is_ident("pbtype"));
             let type_attr = if let Some(attr) = type_attr {
                 let id: Ident = attr.parse_args()?;
                 let s = id.to_string();

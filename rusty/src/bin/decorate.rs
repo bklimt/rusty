@@ -3,6 +3,7 @@ use zombie::Serialize;
 #[derive(Serialize)]
 struct S {
     #[id(1)]
+    #[pbtype(sint32)]
     x: i32,
 }
 
