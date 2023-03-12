@@ -4,11 +4,26 @@ use quote::{quote, ToTokens};
 use std::io::{self, Write};
 use syn::{Data, DeriveInput, LitInt, Type};
 
-pub trait Serialize {
-    fn serialize(&self);
+pub enum WireType {
+    VarInt = 0,
+    Len = 2,
 }
 
-fn write_uvarint(w: &mut impl Write, n: u64) -> io::Result<()> {
+pub trait Serialize {
+    fn serialize_field(&self, id: u64, w: &mut impl Write) -> io::Result<()>;
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()>;
+}
+
+pub fn write_tag(w: &mut impl Write, wiretype: WireType, id: u64) -> io::Result<()> {
+    let ty: u64 = match wiretype {
+        WireType::VarInt => 0,
+        WireType::Len => 2,
+    };
+    let tag = id << 3 | ty;
+    write_uvarint(w, tag)
+}
+
+pub fn write_uvarint(w: &mut impl Write, n: u64) -> io::Result<()> {
     let mut buf: [u8; 10] = [0; 10];
     let mut i = 0usize;
     let mut n = n;
@@ -50,8 +65,13 @@ fn decode_zigzag(n: u64) -> i64 {
 }
 
 impl Serialize for i32 {
-    fn serialize(&self) {
-        println!("serializing i32 {}", self);
+    fn serialize_field(&self, id: u64, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::VarInt, id)?;
+        write_ivarint(w, i64::from(*self))
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_ivarint(w, i64::from(*self))
     }
 }
 
@@ -62,16 +82,17 @@ enum ProtoType {
 
 #[derive(Debug)]
 struct FieldDesc {
-    id: usize,
+    id: u64,
     name: Ident,
     ty: ProtoType,
 }
 
 impl FieldDesc {
     fn serialize_value_call(&self) -> TokenStream {
+        let id = self.id;
         let ident = &self.name;
         quote! {
-            self.#ident.serialize()
+            self.#ident.serialize_field(#id, w)?
         }
     }
 }
@@ -121,7 +142,7 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
                 .ok_or_else(|| anyhow!("no id attribute for field {}", ident.to_string()))?;
 
             let sid: LitInt = id_attr.parse_args()?;
-            let id: usize = sid.base10_parse()?;
+            let id: u64 = sid.base10_parse()?;
             fields.push(FieldDesc {
                 id,
                 name: ident.clone(),
@@ -142,8 +163,17 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
     let out: TokenStream = quote! {
         #[automatically_derived]
         impl zombie::Serialize for #name {
-            fn serialize(&self) {
-                #(#fields);*
+            fn serialize_field(&self, id: u64, w: &mut impl std::io::Write) -> std::io::Result<()> {
+                zombie::write_tag(w, zombie::WireType::Len, id)?;
+                let mut v = Vec::new();
+                self.serialize(&mut v)?;
+                zombie::write_uvarint(w, v.len() as u64)?;
+                w.write_all(&v[..])
+            }
+
+            fn serialize(&self, w: &mut impl std::io::Write) -> std::io::Result<()> {
+                #(#fields);*;
+                std::io::Result::Ok(())
             }
         }
     }
