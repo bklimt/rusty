@@ -8,12 +8,16 @@ pub trait Serialize {
     fn serialize(&self);
 }
 
-fn write_varint(w: &mut impl Write, n: u64) -> io::Result<()> {
+fn write_uvarint(w: &mut impl Write, n: u64) -> io::Result<()> {
     let mut buf: [u8; 10] = [0; 10];
     let mut i = 0usize;
+    let mut n = n;
     loop {
-        let a = (n & 0b01111111) as u8;
-        let n = n >> 7;
+        let mut a = (n & 0b01111111) as u8;
+        n = n >> 7;
+        if n != 0 {
+            a = a | 0b10000000;
+        }
         buf[i] = a;
         i += 1;
         if n == 0 {
@@ -21,6 +25,10 @@ fn write_varint(w: &mut impl Write, n: u64) -> io::Result<()> {
         }
     }
     w.write_all(&buf[0..i])
+}
+
+fn write_ivarint(w: &mut impl Write, n: i64) -> io::Result<()> {
+    write_uvarint(w, u64::from_le_bytes(n.to_le_bytes()))
 }
 
 impl Serialize for i32 {
@@ -124,4 +132,47 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
     .into();
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uvarint_serialize_zero() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_uvarint(&mut buf, 0).unwrap();
+        assert_eq!(buf, vec![0]);
+    }
+
+    #[test]
+    fn uvarint_serialize_one() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_uvarint(&mut buf, 1).unwrap();
+        assert_eq!(buf, vec![1]);
+    }
+
+    #[test]
+    fn uvarint_serialize_byte() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_uvarint(&mut buf, 127).unwrap();
+        assert_eq!(buf, vec![127]);
+    }
+
+    #[test]
+    fn uvarint_serialize_example() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_uvarint(&mut buf, 150).unwrap();
+        assert_eq!(buf, vec![0x96, 0x01]);
+    }
+
+    #[test]
+    fn ivarint_serialize_negative() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_ivarint(&mut buf, -2).unwrap();
+        assert_eq!(
+            buf,
+            vec![0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
+        );
+    }
 }
