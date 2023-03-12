@@ -31,6 +31,24 @@ fn write_ivarint(w: &mut impl Write, n: i64) -> io::Result<()> {
     write_uvarint(w, u64::from_le_bytes(n.to_le_bytes()))
 }
 
+fn encode_zigzag(n: i64) -> u64 {
+    let neg = n < 0;
+    let mut n = n << 1;
+    if neg {
+        n = n ^ !0;
+    }
+    u64::from_le_bytes(n.to_le_bytes())
+}
+
+fn decode_zigzag(n: u64) -> i64 {
+    let neg = (n & 1) != 0;
+    let mut n = n >> 1;
+    if neg {
+        n = n ^ !0;
+    }
+    i64::from_le_bytes(n.to_le_bytes())
+}
+
 impl Serialize for i32 {
     fn serialize(&self) {
         println!("serializing i32 {}", self);
@@ -174,5 +192,27 @@ mod tests {
             buf,
             vec![0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
         );
+    }
+
+    #[test]
+    fn encode_sint_works() {
+        assert_eq!(0, encode_zigzag(0));
+        assert_eq!(1, encode_zigzag(-1));
+        assert_eq!(2, encode_zigzag(1));
+        assert_eq!(3, encode_zigzag(-2));
+        assert_eq!(4, encode_zigzag(2));
+        assert_eq!(0xfffffffe, encode_zigzag(0x7fffffff));
+        assert_eq!(0xffffffff, encode_zigzag(-0x80000000));
+    }
+
+    #[test]
+    fn decode_sint_works() {
+        assert_eq!(0, decode_zigzag(0));
+        assert_eq!(-1, decode_zigzag(1));
+        assert_eq!(1, decode_zigzag(2));
+        assert_eq!(-2, decode_zigzag(3));
+        assert_eq!(2, decode_zigzag(4));
+        assert_eq!(0x7fffffff, decode_zigzag(0xfffffffe));
+        assert_eq!(-0x80000000, decode_zigzag(0xffffffff));
     }
 }
