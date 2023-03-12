@@ -4,9 +4,72 @@ use quote::{quote, ToTokens};
 use std::io::{self, Write};
 use syn::{Data, DeriveInput, LitInt, Type};
 
+#[derive(Clone, Copy, Debug)]
+pub enum ProtoType {
+    Int32,
+    Int64,
+    UInt32,
+    UInt64,
+    SInt32,
+    SInt64,
+    Bool,
+    Enum,
+    Fixed64,
+    SFixed64,
+    Double,
+    String,
+    Bytes,
+    Message,
+    Fixed32,
+    SFixed32,
+    Float,
+}
+
 pub enum WireType {
     VarInt = 0,
+    I64 = 1,
     Len = 2,
+    I32 = 3,
+}
+
+impl ProtoType {
+    fn wiretype(&self) -> WireType {
+        match self {
+            Self::Int32
+            | Self::Int64
+            | Self::UInt32
+            | Self::UInt64
+            | Self::SInt32
+            | Self::SInt64
+            | Self::Bool
+            | Self::Enum => WireType::VarInt,
+            Self::Fixed64 | Self::SFixed64 | Self::Double => WireType::I64,
+            Self::String | Self::Bytes | Self::Message => WireType::Len,
+            Self::Fixed32 | Self::SFixed32 | Self::Float => WireType::I32,
+        }
+    }
+
+    fn from_str(s: &str) -> Option<ProtoType> {
+        match s {
+            "int32" => Some(Self::Int32),
+            "int64" => Some(Self::Int64),
+            "uint32" => Some(Self::UInt32),
+            "uint64" => Some(Self::UInt64),
+            "sint32" => Some(Self::SInt32),
+            "sint64" => Some(Self::SInt64),
+            "bool" => Some(Self::Bool),
+            "enum" => Some(Self::Enum),
+            "fixed64" => Some(Self::Fixed64),
+            "sfixed64" => Some(Self::SFixed64),
+            "double" => Some(Self::Double),
+            "string" => Some(Self::String),
+            "bytes" => Some(Self::Bytes),
+            "fixed32" => Some(Self::Fixed32),
+            "sfixed32" => Some(Self::SFixed32),
+            "float" => Some(Self::Float),
+            _ => None,
+        }
+    }
 }
 
 pub trait Serialize {
@@ -15,10 +78,7 @@ pub trait Serialize {
 }
 
 pub fn write_tag(w: &mut impl Write, wiretype: WireType, id: u64) -> io::Result<()> {
-    let ty: u64 = match wiretype {
-        WireType::VarInt => 0,
-        WireType::Len => 2,
-    };
+    let ty = wiretype as u64;
     let tag = id << 3 | ty;
     write_uvarint(w, tag)
 }
@@ -75,11 +135,6 @@ impl Serialize for i32 {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ProtoType {
-    Int32,
-}
-
 #[derive(Debug)]
 struct FieldDesc {
     id: u64,
@@ -107,7 +162,19 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
                 .as_ref()
                 .ok_or_else(|| anyhow!("no ident for field"))?
                 .clone();
-            let ty: ProtoType = match field.ty.clone() {
+
+            let type_attr = field.attrs.iter().find(|attr| attr.path.is_ident("typ"));
+            let type_attr = if let Some(attr) = type_attr {
+                let id: Ident = attr.parse_args()?;
+                let s = id.to_string();
+                let pt =
+                    ProtoType::from_str(&s).ok_or_else(|| anyhow!("invalid proto type {}", s))?;
+                Some(pt)
+            } else {
+                None
+            };
+
+            let type_inferred: ProtoType = match field.ty.clone() {
                 Type::Array(_) => Err(anyhow!("unsupported type: array")),
                 Type::BareFn(_) => Err(anyhow!("unsupported type: bare fn")),
                 Type::Group(_) => Err(anyhow!("unsupported type: group")),
@@ -134,6 +201,8 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
                     field.ty.to_token_stream().to_string()
                 )),
             }?;
+
+            let ty = type_attr.unwrap_or(type_inferred);
 
             let id_attr = field
                 .attrs
