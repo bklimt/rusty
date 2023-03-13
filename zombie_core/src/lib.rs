@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
-use std::io::{self, Write};
+use std::io::{self, ErrorKind, Write};
 use syn::{Data, DeriveInput, LitInt, Type};
 
 #[derive(Clone, Copy, Debug)]
@@ -72,8 +72,33 @@ impl ProtoType {
     }
 }
 
+impl ToTokens for ProtoType {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.extend(quote! { zombie::ProtoType:: });
+        match *self {
+            ProtoType::Int32 => tokens.extend(quote! { Int32 }),
+            ProtoType::Int64 => tokens.extend(quote! { Int64 }),
+            ProtoType::UInt32 => tokens.extend(quote! { UInt32 }),
+            ProtoType::UInt64 => tokens.extend(quote! { UInt64 }),
+            ProtoType::SInt32 => tokens.extend(quote! { SInt32 }),
+            ProtoType::SInt64 => tokens.extend(quote! { SInt64 }),
+            ProtoType::Bool => tokens.extend(quote! { Bool }),
+            ProtoType::Enum => tokens.extend(quote! { Enum }),
+            ProtoType::Fixed64 => tokens.extend(quote! { Fixed64 }),
+            ProtoType::SFixed64 => tokens.extend(quote! { SFixed64 }),
+            ProtoType::Double => tokens.extend(quote! { Double }),
+            ProtoType::String => tokens.extend(quote! { String }),
+            ProtoType::Bytes => tokens.extend(quote! { Bytes }),
+            ProtoType::Message => tokens.extend(quote! { Message }),
+            ProtoType::Fixed32 => tokens.extend(quote! { Fixed32 }),
+            ProtoType::SFixed32 => tokens.extend(quote! { SFixed32 }),
+            ProtoType::Float => tokens.extend(quote! { Float }),
+        }
+    }
+}
+
 pub trait Serialize {
-    fn serialize_field(&self, id: u64, w: &mut impl Write) -> io::Result<()>;
+    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()>;
     fn serialize(&self, w: &mut impl Write) -> io::Result<()>;
 }
 
@@ -125,13 +150,58 @@ fn decode_zigzag(n: u64) -> i64 {
 }
 
 impl Serialize for i32 {
-    fn serialize_field(&self, id: u64, w: &mut impl Write) -> io::Result<()> {
+    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        match pbtype {
+            ProtoType::Int32 | ProtoType::Int64 | ProtoType::UInt32 | ProtoType::UInt64 => {
+                write_tag(w, WireType::VarInt, id)?;
+                write_ivarint(w, i64::from(*self))
+            }
+            ProtoType::SInt32 | ProtoType::SInt64 => {
+                write_tag(w, WireType::VarInt, id)?;
+                write_uvarint(w, encode_zigzag(i64::from(*self)))
+            }
+            _ => Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("invalid pbtype for i32: {:?}", pbtype),
+            )),
+        }
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_ivarint(w, i64::from(*self))
+    }
+}
+
+impl Serialize for i64 {
+    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
         write_tag(w, WireType::VarInt, id)?;
         write_ivarint(w, i64::from(*self))
     }
 
     fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
         write_ivarint(w, i64::from(*self))
+    }
+}
+
+impl Serialize for u32 {
+    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::VarInt, id)?;
+        write_uvarint(w, u64::from(*self))
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_uvarint(w, u64::from(*self))
+    }
+}
+
+impl Serialize for u64 {
+    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::VarInt, id)?;
+        write_uvarint(w, u64::from(*self))
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_uvarint(w, u64::from(*self))
     }
 }
 
@@ -146,8 +216,9 @@ impl FieldDesc {
     fn serialize_value_call(&self) -> TokenStream {
         let id = self.id;
         let ident = &self.name;
+        let ty = self.ty;
         quote! {
-            self.#ident.serialize_field(#id, w)?
+            self.#ident.serialize_field(#id, #ty, w)?
         }
     }
 }
@@ -186,6 +257,12 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
                 Type::Path(path) => {
                     if path.path.is_ident("i32") {
                         Ok(ProtoType::Int32)
+                    } else if path.path.is_ident("i64") {
+                        Ok(ProtoType::Int64)
+                    } else if path.path.is_ident("u32") {
+                        Ok(ProtoType::UInt32)
+                    } else if path.path.is_ident("u64") {
+                        Ok(ProtoType::UInt64)
                     } else {
                         Err(anyhow!("unsupported type: path"))
                     }
@@ -232,7 +309,7 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
     let out: TokenStream = quote! {
         #[automatically_derived]
         impl zombie::Serialize for #name {
-            fn serialize_field(&self, id: u64, w: &mut impl std::io::Write) -> std::io::Result<()> {
+            fn serialize_field(&self, id: u64, pbtype: zombie::ProtoType, w: &mut impl std::io::Write) -> std::io::Result<()> {
                 zombie::write_tag(w, zombie::WireType::Len, id)?;
                 let mut v = Vec::new();
                 self.serialize(&mut v)?;
