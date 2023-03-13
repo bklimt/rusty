@@ -29,26 +29,10 @@ pub enum WireType {
     VarInt = 0,
     I64 = 1,
     Len = 2,
-    I32 = 3,
+    I32 = 5,
 }
 
 impl ProtoType {
-    fn wiretype(&self) -> WireType {
-        match self {
-            Self::Int32
-            | Self::Int64
-            | Self::UInt32
-            | Self::UInt64
-            | Self::SInt32
-            | Self::SInt64
-            | Self::Bool
-            | Self::Enum => WireType::VarInt,
-            Self::Fixed64 | Self::SFixed64 | Self::Double => WireType::I64,
-            Self::String | Self::Bytes | Self::Message => WireType::Len,
-            Self::Fixed32 | Self::SFixed32 | Self::Float => WireType::I32,
-        }
-    }
-
     fn from_str(s: &str) -> Option<ProtoType> {
         match s {
             "int32" => Some(Self::Int32),
@@ -152,13 +136,17 @@ fn decode_zigzag(n: u64) -> i64 {
 impl Serialize for i32 {
     fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
         match pbtype {
-            ProtoType::Int32 | ProtoType::Int64 | ProtoType::UInt32 | ProtoType::UInt64 => {
+            ProtoType::Int32 => {
                 write_tag(w, WireType::VarInt, id)?;
                 write_ivarint(w, i64::from(*self))
             }
-            ProtoType::SInt32 | ProtoType::SInt64 => {
+            ProtoType::SInt32 => {
                 write_tag(w, WireType::VarInt, id)?;
                 write_uvarint(w, encode_zigzag(i64::from(*self)))
+            }
+            ProtoType::SFixed32 => {
+                write_tag(w, WireType::I32, id)?;
+                w.write_all(&self.to_le_bytes())
             }
             _ => Err(io::Error::new(
                 ErrorKind::InvalidData,
@@ -174,8 +162,24 @@ impl Serialize for i32 {
 
 impl Serialize for i64 {
     fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::VarInt, id)?;
-        write_ivarint(w, i64::from(*self))
+        match pbtype {
+            ProtoType::Int64 => {
+                write_tag(w, WireType::VarInt, id)?;
+                write_ivarint(w, i64::from(*self))
+            }
+            ProtoType::SInt64 => {
+                write_tag(w, WireType::VarInt, id)?;
+                write_uvarint(w, encode_zigzag(i64::from(*self)))
+            }
+            ProtoType::SFixed64 => {
+                write_tag(w, WireType::I64, id)?;
+                w.write_all(&self.to_le_bytes())
+            }
+            _ => Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("invalid pbtype for i64: {:?}", pbtype),
+            )),
+        }
     }
 
     fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
@@ -185,8 +189,20 @@ impl Serialize for i64 {
 
 impl Serialize for u32 {
     fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::VarInt, id)?;
-        write_uvarint(w, u64::from(*self))
+        match pbtype {
+            ProtoType::UInt32 => {
+                write_tag(w, WireType::VarInt, id)?;
+                write_uvarint(w, u64::from(*self))
+            }
+            ProtoType::Fixed32 => {
+                write_tag(w, WireType::I32, id)?;
+                w.write_all(&self.to_le_bytes())
+            }
+            _ => Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("invalid pbtype for u32: {:?}", pbtype),
+            )),
+        }
     }
 
     fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
@@ -196,12 +212,57 @@ impl Serialize for u32 {
 
 impl Serialize for u64 {
     fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::VarInt, id)?;
-        write_uvarint(w, u64::from(*self))
+        match pbtype {
+            ProtoType::UInt64 => {
+                write_tag(w, WireType::VarInt, id)?;
+                write_uvarint(w, u64::from(*self))
+            }
+            ProtoType::Fixed64 => {
+                write_tag(w, WireType::I64, id)?;
+                w.write_all(&self.to_le_bytes())
+            }
+            _ => Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("invalid pbtype for u64: {:?}", pbtype),
+            )),
+        }
     }
 
     fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
         write_uvarint(w, u64::from(*self))
+    }
+}
+
+impl Serialize for bool {
+    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::VarInt, id)?;
+        write_uvarint(w, if *self { 1 } else { 0 })
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_uvarint(w, if *self { 1 } else { 0 })
+    }
+}
+
+impl Serialize for f64 {
+    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::I64, id)?;
+        w.write_all(&self.to_le_bytes())
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        w.write_all(&self.to_le_bytes())
+    }
+}
+
+impl Serialize for f32 {
+    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::I32, id)?;
+        w.write_all(&self.to_le_bytes())
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        w.write_all(&self.to_le_bytes())
     }
 }
 
@@ -263,6 +324,12 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
                         Ok(ProtoType::UInt32)
                     } else if path.path.is_ident("u64") {
                         Ok(ProtoType::UInt64)
+                    } else if path.path.is_ident("bool") {
+                        Ok(ProtoType::Bool)
+                    } else if path.path.is_ident("f32") {
+                        Ok(ProtoType::Fixed32)
+                    } else if path.path.is_ident("f64") {
+                        Ok(ProtoType::Fixed64)
                     } else {
                         Err(anyhow!("unsupported type: path"))
                     }
