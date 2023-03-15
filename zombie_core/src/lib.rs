@@ -302,7 +302,7 @@ impl Serialize for Vec<u8> {
     }
 }
 
-impl Serialize for [u8] {
+impl Serialize for &[u8] {
     fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
         write_tag(w, WireType::Len, id)?;
         self.serialize(w)
