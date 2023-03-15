@@ -302,6 +302,18 @@ impl Serialize for Vec<u8> {
     }
 }
 
+impl Serialize for [u8] {
+    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::Len, id)?;
+        self.serialize(w)
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_uvarint(w, self.len() as u64)?;
+        w.write_all(&self)
+    }
+}
+
 #[derive(Debug)]
 struct FieldDesc {
     id: u64,
@@ -350,7 +362,7 @@ fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
             } else if path.path.is_ident("str") {
                 Ok(ProtoType::String)
             } else if path.path.to_token_stream().to_string() == "Vec < u8 >" {
-                // TODO(klimt): Do this better.
+                // TODO(klimt): Do this check better.
                 Ok(ProtoType::Bytes)
             } else {
                 Err(anyhow!(
@@ -361,7 +373,20 @@ fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
         }
         Type::Ptr(_) => Err(anyhow!("unsupported type: ptr")),
         Type::Reference(r) => infer_proto_type(r.elem.as_ref()),
-        Type::Slice(_) => Err(anyhow!("unsupported type: slice")),
+        Type::Slice(s) => {
+            if let Type::Path(path) = s.elem.as_ref() {
+                if path.path.is_ident("u8") {
+                    Ok(ProtoType::Bytes)
+                } else {
+                    Err(anyhow!(
+                        "unsupported slice type: {:?}",
+                        path.path.to_token_stream()
+                    ))
+                }
+            } else {
+                Err(anyhow!("unsupported type: slice"))
+            }
+        }
         Type::TraitObject(_) => Err(anyhow!("unsupported type: trait object")),
         Type::Tuple(_) => Err(anyhow!("unsupported type: tuple")),
         Type::Verbatim(_) => Err(anyhow!("unsupported type: verbatim")),

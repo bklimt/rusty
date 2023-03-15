@@ -65,12 +65,13 @@ mod tests {
 
         #[id(16)]
         bytes: Vec<u8>,
+
+        #[id(17)]
+        slice: &'static [u8],
         /*
         "enum" => Some(Self::Enum),
-        "bytes" => Some(Self::Bytes),
         sub messages
-        Vec<u8>
-        &[u8]
+        repeated fields
         */
     }
 
@@ -93,6 +94,7 @@ mod tests {
             string: "hello".to_owned(),
             strref: "world",
             bytes: vec![1, 2, 3],
+            slice: &[4, 5, 6],
         };
         let mut v = Vec::new();
         s.serialize(&mut v).unwrap();
@@ -115,6 +117,7 @@ mod tests {
                 0x72, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f, // string
                 0x7a, 0x05, 0x77, 0x6f, 0x72, 0x6c, 0x64, // &str
                 0x82, 0x01, 0x03, 0x01, 0x02, 0x03, // Vec<u8>
+                0x8a, 0x01, 0x03, 0x04, 0x05, 0x06, // &[u8]
             ]
         );
     }
