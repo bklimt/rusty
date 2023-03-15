@@ -266,6 +266,42 @@ impl Serialize for f32 {
     }
 }
 
+impl Serialize for String {
+    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::Len, id)?;
+        self.serialize(w)
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_uvarint(w, self.len() as u64)?;
+        w.write_all(self.as_bytes())
+    }
+}
+
+impl Serialize for str {
+    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::Len, id)?;
+        self.serialize(w)
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_uvarint(w, self.len() as u64)?;
+        w.write_all(self.as_bytes())
+    }
+}
+
+impl Serialize for Vec<u8> {
+    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        write_tag(w, WireType::Len, id)?;
+        self.serialize(w)
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        write_uvarint(w, self.len() as u64)?;
+        w.write_all(&self[..])
+    }
+}
+
 #[derive(Debug)]
 struct FieldDesc {
     id: u64,
@@ -281,6 +317,58 @@ impl FieldDesc {
         quote! {
             self.#ident.serialize_field(#id, #ty, w)?
         }
+    }
+}
+
+fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
+    match ty.clone() {
+        Type::Array(_) => Err(anyhow!("unsupported type: array")),
+        Type::BareFn(_) => Err(anyhow!("unsupported type: bare fn")),
+        Type::Group(_) => Err(anyhow!("unsupported type: group")),
+        Type::ImplTrait(_) => Err(anyhow!("unsupported type: impl trait")),
+        Type::Infer(_) => Err(anyhow!("unsupported type: infer")),
+        Type::Macro(_) => Err(anyhow!("unsupported type: macro")),
+        Type::Never(_) => Err(anyhow!("unsupported type: never")),
+        Type::Paren(_) => Err(anyhow!("unsupported type: paren")),
+        Type::Path(path) => {
+            if path.path.is_ident("i32") {
+                Ok(ProtoType::Int32)
+            } else if path.path.is_ident("i64") {
+                Ok(ProtoType::Int64)
+            } else if path.path.is_ident("u32") {
+                Ok(ProtoType::UInt32)
+            } else if path.path.is_ident("u64") {
+                Ok(ProtoType::UInt64)
+            } else if path.path.is_ident("bool") {
+                Ok(ProtoType::Bool)
+            } else if path.path.is_ident("f32") {
+                Ok(ProtoType::Fixed32)
+            } else if path.path.is_ident("f64") {
+                Ok(ProtoType::Fixed64)
+            } else if path.path.is_ident("String") {
+                Ok(ProtoType::String)
+            } else if path.path.is_ident("str") {
+                Ok(ProtoType::String)
+            } else if path.path.to_token_stream().to_string() == "Vec < u8 >" {
+                // TODO(klimt): Do this better.
+                Ok(ProtoType::Bytes)
+            } else {
+                Err(anyhow!(
+                    "unsupported type: path: {:?}",
+                    path.path.to_token_stream().to_string()
+                ))
+            }
+        }
+        Type::Ptr(_) => Err(anyhow!("unsupported type: ptr")),
+        Type::Reference(r) => infer_proto_type(r.elem.as_ref()),
+        Type::Slice(_) => Err(anyhow!("unsupported type: slice")),
+        Type::TraitObject(_) => Err(anyhow!("unsupported type: trait object")),
+        Type::Tuple(_) => Err(anyhow!("unsupported type: tuple")),
+        Type::Verbatim(_) => Err(anyhow!("unsupported type: verbatim")),
+        _ => Err(anyhow!(
+            "unsupported type: {}",
+            ty.to_token_stream().to_string()
+        )),
     }
 }
 
@@ -306,45 +394,7 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
                 None
             };
 
-            let type_inferred: ProtoType = match field.ty.clone() {
-                Type::Array(_) => Err(anyhow!("unsupported type: array")),
-                Type::BareFn(_) => Err(anyhow!("unsupported type: bare fn")),
-                Type::Group(_) => Err(anyhow!("unsupported type: group")),
-                Type::ImplTrait(_) => Err(anyhow!("unsupported type: impl trait")),
-                Type::Infer(_) => Err(anyhow!("unsupported type: infer")),
-                Type::Macro(_) => Err(anyhow!("unsupported type: macro")),
-                Type::Never(_) => Err(anyhow!("unsupported type: never")),
-                Type::Paren(_) => Err(anyhow!("unsupported type: paren")),
-                Type::Path(path) => {
-                    if path.path.is_ident("i32") {
-                        Ok(ProtoType::Int32)
-                    } else if path.path.is_ident("i64") {
-                        Ok(ProtoType::Int64)
-                    } else if path.path.is_ident("u32") {
-                        Ok(ProtoType::UInt32)
-                    } else if path.path.is_ident("u64") {
-                        Ok(ProtoType::UInt64)
-                    } else if path.path.is_ident("bool") {
-                        Ok(ProtoType::Bool)
-                    } else if path.path.is_ident("f32") {
-                        Ok(ProtoType::Fixed32)
-                    } else if path.path.is_ident("f64") {
-                        Ok(ProtoType::Fixed64)
-                    } else {
-                        Err(anyhow!("unsupported type: path"))
-                    }
-                }
-                Type::Ptr(_) => Err(anyhow!("unsupported type: ptr")),
-                Type::Reference(_) => Err(anyhow!("unsupported type: reference")),
-                Type::Slice(_) => Err(anyhow!("unsupported type: slice")),
-                Type::TraitObject(_) => Err(anyhow!("unsupported type: trait object")),
-                Type::Tuple(_) => Err(anyhow!("unsupported type: tuple")),
-                Type::Verbatim(_) => Err(anyhow!("unsupported type: verbatim")),
-                _ => Err(anyhow!(
-                    "unsupported type: {}",
-                    field.ty.to_token_stream().to_string()
-                )),
-            }?;
+            let type_inferred: ProtoType = infer_proto_type(&field.ty)?;
 
             let ty = type_attr.unwrap_or(type_inferred);
 
