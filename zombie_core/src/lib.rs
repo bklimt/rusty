@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use std::io::{self, ErrorKind, Write};
-use syn::{Data, DeriveInput, LitInt, Type};
+use syn::{Data, DataStruct, DeriveInput, LitInt, Type};
 
 #[derive(Clone, Copy, Debug)]
 pub enum ProtoType {
@@ -397,56 +397,49 @@ fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
     }
 }
 
-pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
+fn derive_serialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream> {
     let mut fields = Vec::new();
 
-    if let Data::Struct(data) = input.data {
-        for field in data.fields.iter() {
-            let ident = field
-                .ident
-                .as_ref()
-                .ok_or_else(|| anyhow!("no ident for field"))?
-                .clone();
+    for field in data.fields.iter() {
+        let ident = field
+            .ident
+            .as_ref()
+            .ok_or_else(|| anyhow!("no ident for field"))?
+            .clone();
 
-            let type_attr = field.attrs.iter().find(|attr| attr.path.is_ident("pbtype"));
-            let type_attr = if let Some(attr) = type_attr {
-                let id: Ident = attr.parse_args()?;
-                let s = id.to_string();
-                let pt =
-                    ProtoType::from_str(&s).ok_or_else(|| anyhow!("invalid proto type {}", s))?;
-                Some(pt)
-            } else {
-                None
-            };
+        let type_attr = field.attrs.iter().find(|attr| attr.path.is_ident("pbtype"));
+        let type_attr = if let Some(attr) = type_attr {
+            let id: Ident = attr.parse_args()?;
+            let s = id.to_string();
+            let pt = ProtoType::from_str(&s).ok_or_else(|| anyhow!("invalid proto type {}", s))?;
+            Some(pt)
+        } else {
+            None
+        };
 
-            let type_inferred: ProtoType = infer_proto_type(&field.ty)?;
+        let type_inferred: ProtoType = infer_proto_type(&field.ty)?;
 
-            let ty = type_attr.unwrap_or(type_inferred);
+        let ty = type_attr.unwrap_or(type_inferred);
 
-            let id_attr = field
-                .attrs
-                .iter()
-                .find(|attr| attr.path.is_ident("id"))
-                .ok_or_else(|| anyhow!("no id attribute for field {}", ident.to_string()))?;
+        let id_attr = field
+            .attrs
+            .iter()
+            .find(|attr| attr.path.is_ident("id"))
+            .ok_or_else(|| anyhow!("no id attribute for field {}", ident.to_string()))?;
 
-            let sid: LitInt = id_attr.parse_args()?;
-            let id: u64 = sid.base10_parse()?;
-            fields.push(FieldDesc {
-                id,
-                name: ident.clone(),
-                ty: ty.clone(),
-            });
-        }
-    } else {
-        panic!("![derive(Serialize)] only works on structs");
+        let sid: LitInt = id_attr.parse_args()?;
+        let id: u64 = sid.base10_parse()?;
+        fields.push(FieldDesc {
+            id,
+            name: ident.clone(),
+            ty: ty.clone(),
+        });
     }
 
     let fields = fields
         .into_iter()
         .map(|field| field.serialize_value_call())
         .collect::<Vec<TokenStream>>();
-
-    let name = input.ident;
 
     let out: TokenStream = quote! {
         #[automatically_derived]
@@ -468,6 +461,13 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
     .into();
 
     Ok(out)
+}
+
+pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
+    match input.data {
+        Data::Struct(data) => derive_serialize_struct(input.ident, data),
+        _ => panic!("![derive(Serialize)] only works on structs"),
+    }
 }
 
 #[cfg(test)]
