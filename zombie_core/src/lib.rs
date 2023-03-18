@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use std::io::{self, ErrorKind, Write};
-use syn::{Data, DataStruct, DeriveInput, LitInt, Type};
+use syn::{Data, DataEnum, DataStruct, DeriveInput, LitInt, Type};
 
 #[derive(Clone, Copy, Debug)]
 pub enum ProtoType {
@@ -23,6 +23,7 @@ pub enum ProtoType {
     Fixed32,
     SFixed32,
     Float,
+    Other,
 }
 
 pub enum WireType {
@@ -77,6 +78,7 @@ impl ToTokens for ProtoType {
             ProtoType::Fixed32 => tokens.extend(quote! { Fixed32 }),
             ProtoType::SFixed32 => tokens.extend(quote! { SFixed32 }),
             ProtoType::Float => tokens.extend(quote! { Float }),
+            ProtoType::Other => tokens.extend(quote! { Other }),
         }
     }
 }
@@ -365,10 +367,8 @@ fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
                 // TODO(klimt): Do this check better.
                 Ok(ProtoType::Bytes)
             } else {
-                Err(anyhow!(
-                    "unsupported type: path: {:?}",
-                    path.path.to_token_stream().to_string()
-                ))
+                // We have to assume this is some type that can handle itself.
+                Ok(ProtoType::Other)
             }
         }
         Type::Ptr(_) => Err(anyhow!("unsupported type: ptr")),
@@ -417,7 +417,7 @@ fn derive_serialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream>
             None
         };
 
-        let type_inferred: ProtoType = infer_proto_type(&field.ty)?;
+        let type_inferred = infer_proto_type(&field.ty)?;
 
         let ty = type_attr.unwrap_or(type_inferred);
 
@@ -463,9 +463,30 @@ fn derive_serialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream>
     Ok(out)
 }
 
+fn derive_serialize_enum(name: Ident, _data: DataEnum) -> Result<TokenStream> {
+    let out: TokenStream = quote! {
+        #[automatically_derived]
+        impl zombie::Serialize for #name {
+            fn serialize_field(&self, id: u64, pbtype: zombie::ProtoType, w: &mut impl std::io::Write) -> std::io::Result<()> {
+                zombie::write_tag(w, zombie::WireType::VarInt, id)?;
+                self.serialize(w)
+            }
+
+            fn serialize(&self, w: &mut impl std::io::Write) -> std::io::Result<()> {
+                zombie::write_uvarint(w, self.clone() as u64)?;
+                std::io::Result::Ok(())
+            }
+        }
+    }
+    .into();
+
+    Ok(out)
+}
+
 pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
     match input.data {
         Data::Struct(data) => derive_serialize_struct(input.ident, data),
+        Data::Enum(data) => derive_serialize_enum(input.ident, data),
         _ => panic!("![derive(Serialize)] only works on structs"),
     }
 }

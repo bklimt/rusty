@@ -10,6 +10,17 @@ mod tests {
     use super::*;
     use zombie_core as zombie;
 
+    #[derive(Copy, Clone, Serialize)]
+    enum TestEnum {
+        VariantTwo = 2,
+    }
+
+    #[derive(Serialize)]
+    struct SubMessage {
+        #[id(1)]
+        int32: i32,
+    }
+
     #[derive(Serialize)]
     struct TestMessage {
         #[id(1)]
@@ -68,10 +79,16 @@ mod tests {
 
         #[id(17)]
         slice: &'static [u8],
+
+        #[id(18)]
+        enumeration: TestEnum,
+
+        #[id(19)]
+        submessage: SubMessage,
         /*
-        "enum" => Some(Self::Enum),
-        sub messages
         repeated fields
+        optional fields
+        reference fields
         */
     }
 
@@ -95,6 +112,8 @@ mod tests {
             strref: "world",
             bytes: vec![1, 2, 3],
             slice: &[4, 5, 6],
+            enumeration: TestEnum::VariantTwo,
+            submessage: SubMessage { int32: 150 },
         };
         let mut v = Vec::new();
         s.serialize(&mut v).unwrap();
@@ -118,6 +137,8 @@ mod tests {
                 0x7a, 0x05, 0x77, 0x6f, 0x72, 0x6c, 0x64, // &str
                 0x82, 0x01, 0x03, 0x01, 0x02, 0x03, // Vec<u8>
                 0x8a, 0x01, 0x03, 0x04, 0x05, 0x06, // &[u8]
+                0x90, 0x01, 0x02, // enum
+                0x9a, 0x01, 0x03, 0x08, 0x96, 0x01, // submessage
             ]
         );
     }
