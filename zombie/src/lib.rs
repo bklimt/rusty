@@ -1,14 +1,14 @@
-pub use zombie_core::write_tag;
-pub use zombie_core::write_uvarint;
-pub use zombie_core::ProtoType;
-pub use zombie_core::Serialize;
-pub use zombie_core::WireType;
+pub use zombie_core::serialize::write_tag;
+pub use zombie_core::serialize::write_uvarint;
+pub use zombie_core::serialize::ProtoType;
+pub use zombie_core::serialize::Serialize;
+pub use zombie_core::serialize::WireType;
 pub use zombie_macro::Serialize;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zombie_core as zombie;
+    use zombie_core::serialize as zombie;
 
     #[derive(Copy, Clone, Serialize)]
     enum TestEnum {
