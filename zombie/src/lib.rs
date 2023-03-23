@@ -85,6 +85,9 @@ mod tests {
 
         #[id(19)]
         submessage: SubMessage,
+
+        #[id(20)]
+        repeated: Vec<u32>,
         /*
         repeated fields
         optional fields
@@ -114,6 +117,7 @@ mod tests {
             slice: &[4, 5, 6],
             enumeration: TestEnum::VariantTwo,
             submessage: SubMessage { int32: 150 },
+            repeated: vec![156, 157, 158],
         };
         let mut v = Vec::new();
         s.serialize(&mut v).unwrap();
@@ -139,6 +143,8 @@ mod tests {
                 0x8a, 0x01, 0x03, 0x04, 0x05, 0x06, // &[u8]
                 0x90, 0x01, 0x02, // enum
                 0x9a, 0x01, 0x03, 0x08, 0x96, 0x01, // submessage
+                0xa0, 0x01, 0x9c, 0x01, 0xa0, 0x01, 0x9d, 0x01, 0xa0, 0x01, 0x9e,
+                0x01, // repeeated
             ]
         );
     }
