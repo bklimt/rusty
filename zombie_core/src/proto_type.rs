@@ -1,5 +1,7 @@
+use anyhow::{anyhow, Result};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
+use syn::{GenericArgument, Path, Type};
 
 #[derive(Clone, Copy, Debug)]
 pub enum ProtoType {
@@ -77,5 +79,107 @@ impl ToTokens for ProtoType {
             ProtoType::Float => tokens.extend(quote! { Float }),
             ProtoType::Other => tokens.extend(quote! { Other }),
         }
+    }
+}
+
+fn get_param_type(ty: &str, path: &Path) -> Option<Type> {
+    if path.segments.len() != 1 {
+        return None;
+    }
+    let first = path.segments.first().unwrap();
+    if first.ident.to_string() != ty {
+        return None;
+    }
+    match &first.arguments {
+        syn::PathArguments::AngleBracketed(args) => {
+            if args.args.len() != 1 {
+                return None;
+            }
+            match args.args.first().unwrap() {
+                GenericArgument::Type(arg) => Some(arg.clone()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn get_vec_type(path: &Path) -> Option<Type> {
+    get_param_type("Vec", path)
+}
+
+fn get_option_type(path: &Path) -> Option<Type> {
+    get_param_type("Option", path)
+}
+
+pub fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
+    match ty.clone() {
+        Type::Array(_) => Err(anyhow!("unsupported type: array")),
+        Type::BareFn(_) => Err(anyhow!("unsupported type: bare fn")),
+        Type::Group(_) => Err(anyhow!("unsupported type: group")),
+        Type::ImplTrait(_) => Err(anyhow!("unsupported type: impl trait")),
+        Type::Infer(_) => Err(anyhow!("unsupported type: infer")),
+        Type::Macro(_) => Err(anyhow!("unsupported type: macro")),
+        Type::Never(_) => Err(anyhow!("unsupported type: never")),
+        Type::Paren(_) => Err(anyhow!("unsupported type: paren")),
+        Type::Path(path) => {
+            if path.path.is_ident("i32") {
+                Ok(ProtoType::Int32)
+            } else if path.path.is_ident("i64") {
+                Ok(ProtoType::Int64)
+            } else if path.path.is_ident("u32") {
+                Ok(ProtoType::UInt32)
+            } else if path.path.is_ident("u64") {
+                Ok(ProtoType::UInt64)
+            } else if path.path.is_ident("bool") {
+                Ok(ProtoType::Bool)
+            } else if path.path.is_ident("f32") {
+                Ok(ProtoType::Fixed32)
+            } else if path.path.is_ident("f64") {
+                Ok(ProtoType::Fixed64)
+            } else if path.path.is_ident("String") {
+                Ok(ProtoType::String)
+            } else if path.path.is_ident("str") {
+                Ok(ProtoType::String)
+            } else if let Some(vec_type) = get_vec_type(&path.path) {
+                if let Type::Path(vec_type_path) = &vec_type {
+                    if vec_type_path.path.is_ident("u8") {
+                        Ok(ProtoType::Bytes)
+                    } else {
+                        infer_proto_type(&vec_type)
+                    }
+                } else {
+                    infer_proto_type(&vec_type)
+                }
+            } else if let Some(opt_type) = get_option_type(&path.path) {
+                infer_proto_type(&opt_type)
+            } else {
+                // We have to assume this is some type that can handle itself.
+                Ok(ProtoType::Other)
+            }
+        }
+        Type::Ptr(_) => Err(anyhow!("unsupported type: ptr")),
+        Type::Reference(r) => infer_proto_type(r.elem.as_ref()),
+        Type::Slice(s) => {
+            if let Type::Path(path) = s.elem.as_ref() {
+                if path.path.is_ident("u8") {
+                    Ok(ProtoType::Bytes)
+                } else {
+                    Err(anyhow!(
+                        "unsupported slice type: {:?}",
+                        path.path.to_token_stream()
+                    ))
+                }
+            } else {
+                Err(anyhow!("unsupported type: slice"))
+            }
+        }
+        Type::TraitObject(_) => Err(anyhow!("unsupported type: trait object")),
+        Type::Tuple(_) => Err(anyhow!("unsupported type: tuple")),
+        Type::Verbatim(_) => Err(anyhow!("unsupported type: verbatim")),
+        _ => Err(anyhow!(
+            "unsupported type: {}",
+            ty.to_token_stream().to_string()
+        )),
     }
 }
