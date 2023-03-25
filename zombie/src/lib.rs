@@ -253,4 +253,30 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_derive_optional_types_empty() {
+        let s = TestOptionalMessage {
+            int32: None,
+            int64: None,
+            uint32: None,
+            uint64: None,
+            sint32: None,
+            sint64: None,
+            boolean: None,
+            fixed64: None,
+            sfixed64: None,
+            fixed32: None,
+            sfixed32: None,
+            double: None,
+            float: None,
+            string: None,
+            bytes: None,
+            enumeration: None,
+            submessage: None,
+        };
+        let mut v = Vec::new();
+        s.serialize(&mut v).unwrap();
+        assert_eq!(v, vec![]);
+    }
 }
