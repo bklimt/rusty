@@ -1,14 +1,16 @@
+pub use zombie_core::proto_type::ProtoType;
+pub use zombie_core::proto_type::WireType;
 pub use zombie_core::serialize::write_tag;
 pub use zombie_core::serialize::write_uvarint;
-pub use zombie_core::serialize::ProtoType;
 pub use zombie_core::serialize::Serialize;
-pub use zombie_core::serialize::WireType;
 pub use zombie_macro::Serialize;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use zombie_core::serialize as zombie;
+    mod zombie {
+        pub use super::super::*;
+    }
+    use zombie::Serialize;
 
     #[derive(Copy, Clone, Serialize)]
     enum TestEnum {
@@ -88,9 +90,6 @@ mod tests {
 
         #[id(20)]
         repeated: Vec<u32>,
-        /*
-        reference fields
-        */
     }
 
     #[derive(Serialize)]
