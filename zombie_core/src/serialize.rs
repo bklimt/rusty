@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use std::io::{self, ErrorKind, Write};
-use syn::{Data, DataEnum, DataStruct, DeriveInput, GenericArgument, LitInt, Path, Type, TypePath};
+use syn::{Data, DataEnum, DataStruct, DeriveInput, GenericArgument, LitInt, Path, Type};
 
 #[derive(Clone, Copy, Debug)]
 pub enum ProtoType {
@@ -332,6 +332,22 @@ impl<T: Serialize> Serialize for Vec<T> {
     }
 }
 
+impl<T: Serialize> Serialize for Option<T> {
+    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
+        match &self {
+            Some(val) => val.serialize_field(id, pbtype, w),
+            None => Ok(()),
+        }
+    }
+
+    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
+        match &self {
+            Some(val) => val.serialize(w),
+            None => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct FieldDesc {
     id: u64,
@@ -350,12 +366,12 @@ impl FieldDesc {
     }
 }
 
-fn get_vec_type(path: Path) -> Option<Type> {
+fn get_param_type(ty: &str, path: &Path) -> Option<Type> {
     if path.segments.len() != 1 {
         return None;
     }
     let first = path.segments.first().unwrap();
-    if first.ident.to_string() != "Vec" {
+    if first.ident.to_string() != ty {
         return None;
     }
     match &first.arguments {
@@ -370,6 +386,14 @@ fn get_vec_type(path: Path) -> Option<Type> {
         }
         _ => None,
     }
+}
+
+fn get_vec_type(path: &Path) -> Option<Type> {
+    get_param_type("Vec", path)
+}
+
+fn get_option_type(path: &Path) -> Option<Type> {
+    get_param_type("Option", path)
 }
 
 fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
@@ -401,7 +425,7 @@ fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
                 Ok(ProtoType::String)
             } else if path.path.is_ident("str") {
                 Ok(ProtoType::String)
-            } else if let Some(vec_type) = get_vec_type(path.path) {
+            } else if let Some(vec_type) = get_vec_type(&path.path) {
                 if let Type::Path(vec_type_path) = &vec_type {
                     if vec_type_path.path.is_ident("u8") {
                         Ok(ProtoType::Bytes)
@@ -411,6 +435,8 @@ fn infer_proto_type(ty: &Type) -> Result<ProtoType> {
                 } else {
                     infer_proto_type(&vec_type)
                 }
+            } else if let Some(opt_type) = get_option_type(&path.path) {
+                infer_proto_type(&opt_type)
             } else {
                 // We have to assume this is some type that can handle itself.
                 Ok(ProtoType::Other)
