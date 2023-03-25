@@ -1,6 +1,9 @@
-use crate::proto_type::{infer_proto_type, ProtoType, WireType};
+use crate::{
+    descriptor::{extract_fields, FieldDesc},
+    proto_type::{ProtoType, WireType},
+};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use std::io::{self, ErrorKind, Write};
@@ -271,13 +274,6 @@ impl<T: Serialize> Serialize for Option<T> {
     }
 }
 
-#[derive(Debug)]
-struct FieldDesc {
-    id: u64,
-    name: Ident,
-    ty: ProtoType,
-}
-
 impl FieldDesc {
     fn serialize_value_call(&self) -> TokenStream {
         let id = self.id;
@@ -290,43 +286,7 @@ impl FieldDesc {
 }
 
 fn derive_serialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream> {
-    let mut fields = Vec::new();
-
-    for field in data.fields.iter() {
-        let ident = field
-            .ident
-            .as_ref()
-            .ok_or_else(|| anyhow!("no ident for field"))?
-            .clone();
-
-        let type_attr = field.attrs.iter().find(|attr| attr.path.is_ident("pbtype"));
-        let type_attr = if let Some(attr) = type_attr {
-            let id: Ident = attr.parse_args()?;
-            let s = id.to_string();
-            let pt = ProtoType::from_str(&s).ok_or_else(|| anyhow!("invalid proto type {}", s))?;
-            Some(pt)
-        } else {
-            None
-        };
-
-        let type_inferred = infer_proto_type(&field.ty)?;
-
-        let ty = type_attr.unwrap_or(type_inferred);
-
-        let id_attr = field
-            .attrs
-            .iter()
-            .find(|attr| attr.path.is_ident("id"))
-            .ok_or_else(|| anyhow!("no id attribute for field {}", ident.to_string()))?;
-
-        let sid: LitInt = id_attr.parse_args()?;
-        let id: u64 = sid.base10_parse()?;
-        fields.push(FieldDesc {
-            id,
-            name: ident.clone(),
-            ty: ty.clone(),
-        });
-    }
+    let fields = extract_fields(data)?;
 
     let fields = fields
         .into_iter()
