@@ -3,6 +3,27 @@ use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{GenericArgument, Path, Type};
 
+pub enum WireType {
+    VarInt = 0,
+    I64 = 1,
+    Len = 2,
+    I32 = 5,
+}
+
+impl TryFrom<u8> for WireType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(WireType::VarInt),
+            1 => Ok(WireType::I64),
+            2 => Ok(WireType::Len),
+            5 => Ok(WireType::I32),
+            _ => Err(anyhow!("invalid wiretype: {}", value)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum ProtoType {
     Int32,
@@ -23,13 +44,6 @@ pub enum ProtoType {
     SFixed32,
     Float,
     Other,
-}
-
-pub enum WireType {
-    VarInt = 0,
-    I64 = 1,
-    Len = 2,
-    I32 = 5,
 }
 
 impl ProtoType {

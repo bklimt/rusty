@@ -6,52 +6,60 @@ use crate::{
 use anyhow::Result;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, ErrorKind, Read};
 use syn::{Data, DataEnum, DataStruct, DeriveInput, LitInt};
 
-pub trait Serialize {
-    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()>;
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()>;
+pub trait Deserialize {
+    //fn deserialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()>;
+    //fn deserialize(&self, w: &mut impl Write) -> io::Result<()>;
 }
 
-pub fn write_tag(w: &mut impl Write, wiretype: WireType, id: u64) -> io::Result<()> {
-    let ty = wiretype as u64;
-    let tag = id << 3 | ty;
-    write_uvarint(w, tag)
+pub fn read_tag(r: &mut impl Read) -> Result<(u64, WireType)> {
+    let tag = read_uvarint(r)?;
+    let ty = (tag & 0b00000111) as u8;
+    let ty = WireType::try_from(ty)?;
+    let id = tag >> 3;
+    Ok((id, ty))
 }
 
-pub fn write_uvarint(w: &mut impl Write, n: u64) -> io::Result<()> {
-    let mut buf: [u8; 10] = [0; 10];
-    let mut i = 0usize;
-    let mut n = n;
-    loop {
-        let mut a = (n & 0b01111111) as u8;
-        n = n >> 7;
-        if n != 0 {
-            a = a | 0b10000000;
-        }
-        buf[i] = a;
-        i += 1;
-        if n == 0 {
-            break;
-        }
+fn read_byte(r: &mut impl Read) -> io::Result<u8> {
+    let mut buf: [u8; 1] = [0];
+    r.read_exact(&mut buf)?;
+    Ok(buf[0])
+}
+
+pub fn read_uvarint(r: &mut impl Read) -> Result<u64> {
+    let mut n = 0u64;
+    let mut shift = 0u8;
+    let mut more = true;
+    while more {
+        let mut b = read_byte(r)?;
+        more = (b & 0b10000000) != 0;
+        b = b & 0b01111111;
+
+        let m = (b as u64) << shift;
+        shift += 7;
+
+        n = n | m;
     }
-    w.write_all(&buf[0..i])
+    Ok(n)
 }
 
-fn write_ivarint(w: &mut impl Write, n: i64) -> io::Result<()> {
-    write_uvarint(w, u64::from_le_bytes(n.to_le_bytes()))
+fn read_ivarint(r: &mut impl Read) -> Result<i64> {
+    let n = read_uvarint(r)?;
+    Ok(i64::from_le_bytes(n.to_le_bytes()))
 }
 
-fn encode_zigzag(n: i64) -> u64 {
-    let neg = n < 0;
-    let mut n = n << 1;
+fn decode_zigzag(n: u64) -> i64 {
+    let neg = (n & 1) != 0;
+    let mut n = n >> 1;
     if neg {
         n = n ^ !0;
     }
-    u64::from_le_bytes(n.to_le_bytes())
+    i64::from_le_bytes(n.to_le_bytes())
 }
 
+/*
 impl Serialize for i32 {
     fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
         match pbtype {
@@ -333,57 +341,55 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
         _ => panic!("![derive(Serialize)] only works on structs"),
     }
 }
+*/
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn uvarint_serialize_zero() {
-        let mut buf: Vec<u8> = Vec::new();
-        write_uvarint(&mut buf, 0).unwrap();
-        assert_eq!(buf, vec![0]);
+    fn uvarint_deserialize_zero() {
+        let buf: Vec<u8> = vec![0];
+        let n = read_uvarint(&mut &buf[..]).unwrap();
+        assert_eq!(0, n);
     }
 
     #[test]
-    fn uvarint_serialize_one() {
-        let mut buf: Vec<u8> = Vec::new();
-        write_uvarint(&mut buf, 1).unwrap();
-        assert_eq!(buf, vec![1]);
+    fn uvarint_deserialize_one() {
+        let buf: Vec<u8> = vec![1];
+        let n = read_uvarint(&mut &buf[..]).unwrap();
+        assert_eq!(1, n);
     }
 
     #[test]
-    fn uvarint_serialize_byte() {
-        let mut buf: Vec<u8> = Vec::new();
-        write_uvarint(&mut buf, 127).unwrap();
-        assert_eq!(buf, vec![127]);
+    fn uvarint_deserialize_byte() {
+        let buf: Vec<u8> = vec![127];
+        let n = read_uvarint(&mut &buf[..]).unwrap();
+        assert_eq!(127, n);
     }
 
     #[test]
-    fn uvarint_serialize_example() {
-        let mut buf: Vec<u8> = Vec::new();
-        write_uvarint(&mut buf, 150).unwrap();
-        assert_eq!(buf, vec![0x96, 0x01]);
+    fn uvarint_deserialize_example() {
+        let buf: Vec<u8> = vec![0x96, 0x01];
+        let n = read_uvarint(&mut &buf[..]).unwrap();
+        assert_eq!(150, n);
     }
 
     #[test]
-    fn ivarint_serialize_negative() {
-        let mut buf: Vec<u8> = Vec::new();
-        write_ivarint(&mut buf, -2).unwrap();
-        assert_eq!(
-            buf,
-            vec![0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
-        );
+    fn ivarint_deserialize_negative() {
+        let buf: Vec<u8> = vec![0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
+        let n = read_ivarint(&mut &buf[..]).unwrap();
+        assert_eq!(-2, n);
     }
 
     #[test]
-    fn encode_sint_works() {
-        assert_eq!(0, encode_zigzag(0));
-        assert_eq!(1, encode_zigzag(-1));
-        assert_eq!(2, encode_zigzag(1));
-        assert_eq!(3, encode_zigzag(-2));
-        assert_eq!(4, encode_zigzag(2));
-        assert_eq!(0xfffffffe, encode_zigzag(0x7fffffff));
-        assert_eq!(0xffffffff, encode_zigzag(-0x80000000));
+    fn decode_sint_works() {
+        assert_eq!(0, decode_zigzag(0));
+        assert_eq!(-1, decode_zigzag(1));
+        assert_eq!(1, decode_zigzag(2));
+        assert_eq!(-2, decode_zigzag(3));
+        assert_eq!(2, decode_zigzag(4));
+        assert_eq!(0x7fffffff, decode_zigzag(0xfffffffe));
+        assert_eq!(-0x80000000, decode_zigzag(0xffffffff));
     }
 }
