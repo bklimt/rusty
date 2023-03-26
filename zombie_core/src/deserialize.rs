@@ -3,18 +3,17 @@ use crate::{
     proto_type::{ProtoType, WireType},
 };
 
-use anyhow::Result;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use std::io::{self, ErrorKind, Read};
 use syn::{Data, DataEnum, DataStruct, DeriveInput, LitInt};
 
 pub trait Deserialize {
-    //fn deserialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()>;
+    fn deserialize_field(&mut self, wiretype: WireType, r: &mut impl Read) -> io::Result<()>;
     //fn deserialize(&self, w: &mut impl Write) -> io::Result<()>;
 }
 
-pub fn read_tag(r: &mut impl Read) -> Result<(u64, WireType)> {
+pub fn read_tag(r: &mut impl Read) -> io::Result<(u64, WireType)> {
     let tag = read_uvarint(r)?;
     let ty = (tag & 0b00000111) as u8;
     let ty = WireType::try_from(ty)?;
@@ -28,7 +27,7 @@ fn read_byte(r: &mut impl Read) -> io::Result<u8> {
     Ok(buf[0])
 }
 
-pub fn read_uvarint(r: &mut impl Read) -> Result<u64> {
+pub fn read_uvarint(r: &mut impl Read) -> io::Result<u64> {
     let mut n = 0u64;
     let mut shift = 0u8;
     let mut more = true;
@@ -36,6 +35,8 @@ pub fn read_uvarint(r: &mut impl Read) -> Result<u64> {
         let mut b = read_byte(r)?;
         more = (b & 0b10000000) != 0;
         b = b & 0b01111111;
+
+        // TODO(klimt): Check that shift is valid.
 
         let m = (b as u64) << shift;
         shift += 7;
@@ -45,7 +46,7 @@ pub fn read_uvarint(r: &mut impl Read) -> Result<u64> {
     Ok(n)
 }
 
-fn read_ivarint(r: &mut impl Read) -> Result<i64> {
+fn read_ivarint(r: &mut impl Read) -> io::Result<i64> {
     let n = read_uvarint(r)?;
     Ok(i64::from_le_bytes(n.to_le_bytes()))
 }
@@ -59,34 +60,31 @@ fn decode_zigzag(n: u64) -> i64 {
     i64::from_le_bytes(n.to_le_bytes())
 }
 
-/*
-impl Serialize for i32 {
-    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        match pbtype {
-            ProtoType::Int32 => {
-                write_tag(w, WireType::VarInt, id)?;
-                write_ivarint(w, i64::from(*self))
+// TODO(klimt): Do I need the proto definition to know if it's a signed field?
+impl Deserialize for i32 {
+    fn deserialize_field(&mut self, wiretype: WireType, r: &mut impl Read) -> io::Result<()> {
+        match wiretype {
+            WireType::I32 => {
+                let mut buffer: [u8; 4] = [0; 4];
+                r.read_exact(&mut buffer)?;
+                *self = i32::from_le_bytes(buffer);
+                Ok(())
             }
-            ProtoType::SInt32 => {
-                write_tag(w, WireType::VarInt, id)?;
-                write_uvarint(w, encode_zigzag(i64::from(*self)))
-            }
-            ProtoType::SFixed32 => {
-                write_tag(w, WireType::I32, id)?;
-                w.write_all(&self.to_le_bytes())
+            WireType::VarInt => {
+                // TODO(klimt): Check for overflow.
+                let n = read_ivarint(r)?;
+                *self = n as i32;
+                Ok(())
             }
             _ => Err(io::Error::new(
                 ErrorKind::InvalidData,
-                format!("invalid pbtype for i32: {:?}", pbtype),
+                format!("invalid wiretype for i32: {:?}", wiretype),
             )),
         }
     }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_ivarint(w, i64::from(*self))
-    }
 }
 
+/*
 impl Serialize for i64 {
     fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
         match pbtype {
@@ -271,19 +269,19 @@ impl<T: Serialize> Serialize for Option<T> {
             None => Ok(()),
         }
     }
-}
+}*/
 
 impl FieldDesc {
-    fn serialize_value_call(&self) -> TokenStream {
-        let id = self.id;
+    fn deserialize_value_call(&self) -> TokenStream {
         let ident = &self.name;
         let ty = self.ty;
         quote! {
-            self.#ident.serialize_field(#id, #ty, w)?
+            self.#ident.deserialize_field(#ty, r)?
         }
     }
 }
 
+/*
 fn derive_serialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream> {
     let fields = extract_fields(data)?;
 

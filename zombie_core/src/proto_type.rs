@@ -1,8 +1,10 @@
 use anyhow::{anyhow, Result};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
+use std::io;
 use syn::{GenericArgument, Path, Type};
 
+#[derive(Debug)]
 pub enum WireType {
     VarInt = 0,
     I64 = 1,
@@ -11,7 +13,7 @@ pub enum WireType {
 }
 
 impl TryFrom<u8> for WireType {
-    type Error = anyhow::Error;
+    type Error = io::Error;
 
     fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
         match value {
@@ -19,7 +21,10 @@ impl TryFrom<u8> for WireType {
             1 => Ok(WireType::I64),
             2 => Ok(WireType::Len),
             5 => Ok(WireType::I32),
-            _ => Err(anyhow!("invalid wiretype: {}", value)),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid wiretype: {:?}", value),
+            )),
         }
     }
 }
