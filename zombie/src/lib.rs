@@ -380,7 +380,7 @@ mod tests {
 
         match actual.enumeration {
             TestEnum::VariantTwo => {}
-            _ => panic!("incorrect varianet"),
+            _ => panic!("incorrect variant"),
         }
     }
 }
