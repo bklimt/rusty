@@ -3,31 +3,45 @@ use crate::{
     proto_type::{ProtoType, WireType},
 };
 
+use anyhow::Result;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use std::io::{self, ErrorKind, Read};
 use syn::{Data, DataEnum, DataStruct, DeriveInput, LitInt};
 
 pub trait Deserialize {
-    fn deserialize_field(&mut self, wiretype: WireType, r: &mut impl Read) -> io::Result<()>;
-    //fn deserialize(&self, w: &mut impl Write) -> io::Result<()>;
+    fn deserialize_field(
+        &mut self,
+        prototype: ProtoType,
+        wiretype: WireType,
+        r: impl Read,
+    ) -> io::Result<()>;
+
+    fn deserialize(&mut self, r: impl Read) -> io::Result<()>;
 }
 
-pub fn read_tag(r: &mut impl Read) -> io::Result<(u64, WireType)> {
-    let tag = read_uvarint(r)?;
-    let ty = (tag & 0b00000111) as u8;
-    let ty = WireType::try_from(ty)?;
-    let id = tag >> 3;
-    Ok((id, ty))
+pub fn read_tag(r: impl Read) -> io::Result<Option<(u64, WireType)>> {
+    match read_uvarint(r) {
+        Ok(tag) => {
+            let ty = (tag & 0b00000111) as u8;
+            let ty = WireType::try_from(ty)?;
+            let id = tag >> 3;
+            Ok(Some((id, ty)))
+        }
+        Err(error) => match error.kind() {
+            ErrorKind::UnexpectedEof => Ok(None),
+            _ => Err(error),
+        },
+    }
 }
 
-fn read_byte(r: &mut impl Read) -> io::Result<u8> {
+fn read_byte(r: impl Read) -> io::Result<u8> {
     let mut buf: [u8; 1] = [0];
     r.read_exact(&mut buf)?;
     Ok(buf[0])
 }
 
-pub fn read_uvarint(r: &mut impl Read) -> io::Result<u64> {
+pub fn read_uvarint(r: impl Read) -> io::Result<u64> {
     let mut n = 0u64;
     let mut shift = 0u8;
     let mut more = true;
@@ -46,7 +60,7 @@ pub fn read_uvarint(r: &mut impl Read) -> io::Result<u64> {
     Ok(n)
 }
 
-fn read_ivarint(r: &mut impl Read) -> io::Result<i64> {
+fn read_ivarint(r: impl Read) -> io::Result<i64> {
     let n = read_uvarint(r)?;
     Ok(i64::from_le_bytes(n.to_le_bytes()))
 }
@@ -62,7 +76,12 @@ fn decode_zigzag(n: u64) -> i64 {
 
 // TODO(klimt): Do I need the proto definition to know if it's a signed field?
 impl Deserialize for i32 {
-    fn deserialize_field(&mut self, wiretype: WireType, r: &mut impl Read) -> io::Result<()> {
+    fn deserialize_field(
+        &mut self,
+        prototype: ProtoType,
+        wiretype: WireType,
+        r: impl Read,
+    ) -> io::Result<()> {
         match wiretype {
             WireType::I32 => {
                 let mut buffer: [u8; 4] = [0; 4];
@@ -81,6 +100,12 @@ impl Deserialize for i32 {
                 format!("invalid wiretype for i32: {:?}", wiretype),
             )),
         }
+    }
+
+    fn deserialize(&mut self, r: impl Read) -> io::Result<()> {
+        let n = read_ivarint(r)?;
+        *self = n as i32;
+        Ok(())
     }
 }
 
@@ -272,38 +297,46 @@ impl<T: Serialize> Serialize for Option<T> {
 }*/
 
 impl FieldDesc {
-    fn deserialize_value_call(&self) -> TokenStream {
+    fn deserialize_value_clause(&self) -> TokenStream {
         let ident = &self.name;
+        let id = self.id;
         let ty = self.ty;
         quote! {
-            self.#ident.deserialize_field(#ty, r)?
+            #id => self.#ident.deserialize_field(#ty, wiretype, r)?
         }
     }
 }
 
-/*
-fn derive_serialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream> {
+fn derive_deserialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream> {
     let fields = extract_fields(data)?;
 
     let fields = fields
         .into_iter()
-        .map(|field| field.serialize_value_call())
+        .map(|field| field.deserialize_value_clause())
         .collect::<Vec<TokenStream>>();
 
     let out: TokenStream = quote! {
         #[automatically_derived]
-        impl zombie::Serialize for #name {
-            fn serialize_field(&self, id: u64, pbtype: zombie::ProtoType, w: &mut impl std::io::Write) -> std::io::Result<()> {
-                zombie::write_tag(w, zombie::WireType::Len, id)?;
-                let mut v = Vec::new();
-                self.serialize(&mut v)?;
-                zombie::write_uvarint(w, v.len() as u64)?;
-                w.write_all(&v[..])
+        impl zombie::Deserialize for #name {
+            fn deserialize_field(
+                &mut self,
+                prototype: zombie::ProtoType,
+                wiretype: zombie::WireType,
+                r: &mut impl std::io::Read
+            ) -> std::io::Result<()> {
+                let len = zombie::read_uvarint(r)?;
+                let v = vec![0u8; len as usize];
+                r.read_exact(&mut v)
+                //self.deserialize(&mut v)
             }
 
-            fn serialize(&self, w: &mut impl std::io::Write) -> std::io::Result<()> {
-                #(#fields);*;
-                std::io::Result::Ok(())
+            fn deserialize(&mut self, r: &mut impl std::io::Read) -> std::io::Result<()> {
+                while let Some((id, wiretype)) = zombie::read_tag(r)? {
+                    match id {
+                        #(#fields),*,
+                    }
+                }
+                Ok(())
             }
         }
     }
@@ -312,6 +345,7 @@ fn derive_serialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream>
     Ok(out)
 }
 
+/*
 fn derive_serialize_enum(name: Ident, _data: DataEnum) -> Result<TokenStream> {
     let out: TokenStream = quote! {
         #[automatically_derived]
@@ -331,15 +365,15 @@ fn derive_serialize_enum(name: Ident, _data: DataEnum) -> Result<TokenStream> {
 
     Ok(out)
 }
+*/
 
-pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
+pub fn derive_deserialize(input: DeriveInput) -> Result<TokenStream> {
     match input.data {
-        Data::Struct(data) => derive_serialize_struct(input.ident, data),
-        Data::Enum(data) => derive_serialize_enum(input.ident, data),
-        _ => panic!("![derive(Serialize)] only works on structs"),
+        Data::Struct(data) => derive_deserialize_struct(input.ident, data),
+        //Data::Enum(data) => derive_deserialize_enum(input.ident, data),
+        _ => panic!("![derive(Deserialize)] only works on structs"),
     }
 }
-*/
 
 #[cfg(test)]
 mod tests {

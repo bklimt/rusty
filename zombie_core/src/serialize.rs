@@ -330,7 +330,7 @@ pub fn derive_serialize(input: DeriveInput) -> Result<TokenStream> {
     match input.data {
         Data::Struct(data) => derive_serialize_struct(input.ident, data),
         Data::Enum(data) => derive_serialize_enum(input.ident, data),
-        _ => panic!("![derive(Serialize)] only works on structs"),
+        _ => panic!("![derive(Serialize)] only works on structs and enums"),
     }
 }
 

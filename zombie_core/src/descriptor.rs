@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::proto_type::{infer_proto_type, ProtoType};
 
 use anyhow::{anyhow, Result};
