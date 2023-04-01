@@ -1,6 +1,8 @@
 pub use zombie_core::deserialize::read_tag;
 pub use zombie_core::deserialize::read_uvarint;
 pub use zombie_core::deserialize::Deserialize;
+pub use zombie_core::deserialize::DeserializeError;
+pub use zombie_core::deserialize::DeserializeField;
 pub use zombie_core::proto_type::ProtoType;
 pub use zombie_core::proto_type::WireType;
 pub use zombie_core::serialize::write_tag;
@@ -15,11 +17,30 @@ mod tests {
         pub use super::super::*;
     }
     use zombie::Deserialize;
+    use zombie::DeserializeField;
     use zombie::Serialize;
 
-    #[derive(Copy, Clone, Serialize)]
+    #[derive(Copy, Clone, Serialize, Deserialize)]
     enum TestEnum {
+        VariantZero = 0,
+        VariantOne = 1,
         VariantTwo = 2,
+    }
+
+    impl TryFrom<u64> for TestEnum {
+        type Error = std::io::Error;
+
+        fn try_from(value: u64) -> Result<Self, Self::Error> {
+            match value {
+                0 => Ok(TestEnum::VariantZero),
+                1 => Ok(TestEnum::VariantOne),
+                2 => Ok(TestEnum::VariantTwo),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalud TestEnum value: {}", value),
+                )),
+            }
+        }
     }
 
     #[derive(Serialize, Deserialize)]
@@ -28,7 +49,7 @@ mod tests {
         int32: i32,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Deserialize)]
     struct TestMessage {
         #[id(1)]
         int32: i32,
@@ -78,14 +99,8 @@ mod tests {
         #[id(14)]
         string: String,
 
-        #[id(15)]
-        strref: &'static str,
-
         #[id(16)]
         bytes: Vec<u8>,
-
-        #[id(17)]
-        slice: &'static [u8],
 
         #[id(18)]
         enumeration: TestEnum,
@@ -174,9 +189,7 @@ mod tests {
             double: 3.14159,
             float: -1234.0,
             string: "hello".to_owned(),
-            strref: "world",
             bytes: vec![1, 2, 3],
-            slice: &[4, 5, 6],
             enumeration: TestEnum::VariantTwo,
             submessage: SubMessage { int32: 150 },
             repeated: vec![156, 157, 158],
@@ -200,13 +213,11 @@ mod tests {
                 0x61, 0x6e, 0x86, 0x1b, 0xf0, 0xf9, 0x21, 0x09, 0x40, // double
                 0x6d, 0x00, 0x40, 0x9a, 0xc4, // float
                 0x72, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f, // string
-                0x7a, 0x05, 0x77, 0x6f, 0x72, 0x6c, 0x64, // &str
                 0x82, 0x01, 0x03, 0x01, 0x02, 0x03, // Vec<u8>
-                0x8a, 0x01, 0x03, 0x04, 0x05, 0x06, // &[u8]
                 0x90, 0x01, 0x02, // enum
                 0x9a, 0x01, 0x03, 0x08, 0x96, 0x01, // submessage
                 0xa0, 0x01, 0x9c, 0x01, 0xa0, 0x01, 0x9d, 0x01, 0xa0, 0x01, 0x9e,
-                0x01, // repeeated
+                0x01, // repeated
             ]
         );
     }
@@ -273,6 +284,7 @@ mod tests {
             fixed32: None,
             sfixed32: None,
             double: None,
+
             float: None,
             string: None,
             bytes: None,
@@ -286,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_derive_deserialize_types() {
-        let mut v = vec![
+        let v = vec![
             0x08, 0x96, 0x01, // int32
             0x10, 0x97, 0x01, // int64
             0x18, 0x98, 0x01, // uint32
@@ -301,19 +313,38 @@ mod tests {
             0x61, 0x6e, 0x86, 0x1b, 0xf0, 0xf9, 0x21, 0x09, 0x40, // double
             0x6d, 0x00, 0x40, 0x9a, 0xc4, // float
             0x72, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f, // string
-            0x7a, 0x05, 0x77, 0x6f, 0x72, 0x6c, 0x64, // &str
             0x82, 0x01, 0x03, 0x01, 0x02, 0x03, // Vec<u8>
-            0x8a, 0x01, 0x03, 0x04, 0x05, 0x06, // &[u8]
             0x90, 0x01, 0x02, // enum
             0x9a, 0x01, 0x03, 0x08, 0x96, 0x01, // submessage
             0xa0, 0x01, 0x9c, 0x01, 0xa0, 0x01, 0x9d, 0x01, 0xa0, 0x01, 0x9e,
-            0x01, // repeeated
+            0x01, // repeated
         ];
 
-        let sub = SubMessage { int32: 150 };
-
         // TODO(klimt): Zero this out.
-        let s = TestMessage {
+        let mut actual = TestMessage {
+            int32: 0,
+            int64: 0,
+            uint32: 0,
+            uint64: 0,
+            sint32: 0,
+            sint64: 0,
+            boolean: false,
+            fixed64: 0,
+            sfixed64: 0,
+            fixed32: 0,
+            sfixed32: 0,
+            double: 0.0,
+            float: 0.0,
+            string: "".to_owned(),
+            bytes: vec![],
+            enumeration: TestEnum::VariantTwo,
+            submessage: SubMessage { int32: 0 },
+            repeated: vec![],
+        };
+
+        actual.deserialize(&mut &v[..]).unwrap();
+
+        let expected = TestMessage {
             int32: 150,
             int64: 151,
             uint32: 152,
@@ -328,44 +359,28 @@ mod tests {
             double: 3.14159,
             float: -1234.0,
             string: "hello".to_owned(),
-            strref: "world",
             bytes: vec![1, 2, 3],
-            slice: &[4, 5, 6],
             enumeration: TestEnum::VariantTwo,
             submessage: SubMessage { int32: 150 },
             repeated: vec![156, 157, 158],
         };
 
-        sub.deserialize(&mut *v).unwrap();
+        assert_eq!(expected.int32, actual.int32);
+        assert_eq!(expected.int64, actual.int64);
+        assert_eq!(expected.uint32, actual.uint32);
+        assert_eq!(expected.uint64, actual.uint64);
+        assert_eq!(expected.sint32, actual.sint32);
+        assert_eq!(expected.sint64, actual.sint64);
+        assert_eq!(expected.double, actual.double);
+        assert_eq!(expected.float, actual.float);
+        assert_eq!(expected.string, actual.string);
+        assert_eq!(expected.bytes, actual.bytes);
+        assert_eq!(expected.submessage.int32, actual.submessage.int32);
+        assert_eq!(expected.repeated, actual.repeated);
 
-        /*
-        let s = TestMessage {
-            int32: 150,
-            int64: 151,
-            uint32: 152,
-            uint64: 153,
-            sint32: -1,
-            sint64: -2,
-            boolean: true,
-            fixed64: 154,
-            sfixed64: -3,
-            fixed32: 155,
-            sfixed32: -4,
-            double: 3.14159,
-            float: -1234.0,
-            string: "hello".to_owned(),
-            strref: "world",
-            bytes: vec![1, 2, 3],
-            slice: &[4, 5, 6],
-            enumeration: TestEnum::VariantTwo,
-            submessage: SubMessage { int32: 150 },
-            repeated: vec![156, 157, 158],
-        };
-        let mut v = Vec::new();
-        s.serialize(&mut v).unwrap();
-        assert_eq!(
-            v,
-        );
-        */
+        match actual.enumeration {
+            TestEnum::VariantTwo => {}
+            _ => panic!("incorrect varianet"),
+        }
     }
 }

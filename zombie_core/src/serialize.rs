@@ -7,7 +7,7 @@ use anyhow::Result;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use std::io::{self, ErrorKind, Write};
-use syn::{Data, DataEnum, DataStruct, DeriveInput, LitInt};
+use syn::{Data, DataEnum, DataStruct, DeriveInput};
 
 pub trait Serialize {
     fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()>;
@@ -385,5 +385,12 @@ mod tests {
         assert_eq!(4, encode_zigzag(2));
         assert_eq!(0xfffffffe, encode_zigzag(0x7fffffff));
         assert_eq!(0xffffffff, encode_zigzag(-0x80000000));
+    }
+
+    #[test]
+    fn write_tag_works() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_tag(&mut buf, WireType::Len, 9).unwrap();
+        assert_eq!(buf, vec![0b1001010]);
     }
 }

@@ -3,24 +3,39 @@ use crate::{
     proto_type::{ProtoType, WireType},
 };
 
-use anyhow::Result;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
-use std::io::{self, ErrorKind, Read};
-use syn::{Data, DataEnum, DataStruct, DeriveInput, LitInt};
+use std::{
+    io::{self, ErrorKind, Read},
+    string::FromUtf8Error,
+};
+use syn::{Data, DataEnum, DataStruct, DeriveInput};
+use thiserror::Error;
 
-pub trait Deserialize {
+#[derive(Error, Debug)]
+pub enum DeserializeError {
+    #[error("io error")]
+    IoError(#[from] io::Error),
+    #[error("utf-8 error")]
+    Utf8Error(#[from] FromUtf8Error),
+    #[error("type error: `{0}`")]
+    TypeError(String),
+}
+
+pub trait DeserializeField {
     fn deserialize_field(
         &mut self,
         prototype: ProtoType,
         wiretype: WireType,
-        r: impl Read,
-    ) -> io::Result<()>;
-
-    fn deserialize(&mut self, r: impl Read) -> io::Result<()>;
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError>;
 }
 
-pub fn read_tag(r: impl Read) -> io::Result<Option<(u64, WireType)>> {
+pub trait Deserialize {
+    fn deserialize(&mut self, r: &mut impl Read) -> Result<(), DeserializeError>;
+}
+
+pub fn read_tag(r: &mut impl Read) -> Result<Option<(u64, WireType)>, DeserializeError> {
     match read_uvarint(r) {
         Ok(tag) => {
             let ty = (tag & 0b00000111) as u8;
@@ -30,18 +45,18 @@ pub fn read_tag(r: impl Read) -> io::Result<Option<(u64, WireType)>> {
         }
         Err(error) => match error.kind() {
             ErrorKind::UnexpectedEof => Ok(None),
-            _ => Err(error),
+            _ => Err(DeserializeError::IoError(error)),
         },
     }
 }
 
-fn read_byte(r: impl Read) -> io::Result<u8> {
+fn read_byte(r: &mut impl Read) -> io::Result<u8> {
     let mut buf: [u8; 1] = [0];
     r.read_exact(&mut buf)?;
     Ok(buf[0])
 }
 
-pub fn read_uvarint(r: impl Read) -> io::Result<u64> {
+pub fn read_uvarint(r: &mut impl Read) -> io::Result<u64> {
     let mut n = 0u64;
     let mut shift = 0u8;
     let mut more = true;
@@ -60,9 +75,132 @@ pub fn read_uvarint(r: impl Read) -> io::Result<u64> {
     Ok(n)
 }
 
-fn read_ivarint(r: impl Read) -> io::Result<i64> {
+fn read_ivarint(r: &mut impl Read) -> Result<i64, DeserializeError> {
     let n = read_uvarint(r)?;
     Ok(i64::from_le_bytes(n.to_le_bytes()))
+}
+
+fn read_fixed_i32(r: &mut impl Read) -> Result<i32, DeserializeError> {
+    let mut buffer: [u8; 4] = [0; 4];
+    r.read_exact(&mut buffer)?;
+    Ok(i32::from_le_bytes(buffer))
+}
+
+fn read_fixed_i64(r: &mut impl Read) -> Result<i64, DeserializeError> {
+    let mut buffer: [u8; 8] = [0; 8];
+    r.read_exact(&mut buffer)?;
+    Ok(i64::from_le_bytes(buffer))
+}
+
+fn read_fixed_u32(r: &mut impl Read) -> Result<u32, DeserializeError> {
+    let mut buffer: [u8; 4] = [0; 4];
+    r.read_exact(&mut buffer)?;
+    Ok(u32::from_le_bytes(buffer))
+}
+
+fn read_fixed_u64(r: &mut impl Read) -> Result<u64, DeserializeError> {
+    let mut buffer: [u8; 8] = [0; 8];
+    r.read_exact(&mut buffer)?;
+    Ok(u64::from_le_bytes(buffer))
+}
+
+pub fn read_i32(r: &mut impl Read, wiretype: WireType) -> Result<i32, DeserializeError> {
+    match wiretype {
+        WireType::I32 => read_fixed_i32(r),
+        // TODO(klimt): Add bounds checking.
+        WireType::I64 => Ok(read_fixed_i64(r)? as i32),
+        WireType::VarInt => Ok(read_ivarint(r)? as i32),
+        _ => Err(DeserializeError::TypeError(format!(
+            "invalid wiretype for i32: {:?}",
+            wiretype
+        ))),
+    }
+}
+
+pub fn read_i64(r: &mut impl Read, wiretype: WireType) -> Result<i64, DeserializeError> {
+    match wiretype {
+        WireType::I32 => Ok(read_fixed_i32(r)? as i64),
+        WireType::I64 => read_fixed_i64(r),
+        WireType::VarInt => read_ivarint(r),
+        _ => Err(DeserializeError::TypeError(format!(
+            "invalid wiretype for i64: {:?}",
+            wiretype
+        ))),
+    }
+}
+
+pub fn read_u32(r: &mut impl Read, wiretype: WireType) -> Result<u32, DeserializeError> {
+    match wiretype {
+        WireType::I32 => read_fixed_u32(r),
+        // TODO(klimt): Add bounds checking.
+        WireType::I64 => Ok(read_fixed_u64(r)? as u32),
+        WireType::VarInt => Ok(read_uvarint(r)? as u32),
+        _ => Err(DeserializeError::TypeError(format!(
+            "invalid wiretype for u32: {:?}",
+            wiretype
+        ))),
+    }
+}
+
+pub fn read_u64(r: &mut impl Read, wiretype: WireType) -> Result<u64, DeserializeError> {
+    match wiretype {
+        WireType::I32 => Ok(read_fixed_u32(r)? as u64),
+        WireType::I64 => read_fixed_u64(r),
+        WireType::VarInt => Ok(read_uvarint(r)?),
+        _ => Err(DeserializeError::TypeError(format!(
+            "invalid wiretype for u64: {:?}",
+            wiretype
+        ))),
+    }
+}
+
+fn read_int(
+    r: &mut impl Read,
+    wiretype: WireType,
+    prototype: ProtoType,
+) -> Result<i64, DeserializeError> {
+    match prototype {
+        ProtoType::Int32 | ProtoType::SFixed32 => Ok(read_i32(r, wiretype)? as i64),
+        ProtoType::Int64 | ProtoType::SFixed64 => read_i64(r, wiretype),
+        ProtoType::UInt32 | ProtoType::Fixed32 => Ok(read_u32(r, wiretype)? as i64),
+        // TODO(klimt): Maybe do bounds-checking here instead.
+        ProtoType::UInt64 | ProtoType::Fixed64 => Err(DeserializeError::TypeError(
+            "attempted to read u64 field as signed".to_owned(),
+        )),
+        ProtoType::SInt32 | ProtoType::SInt64 => Ok(decode_zigzag(read_u64(r, wiretype)?)),
+        ProtoType::Bool => read_i64(r, wiretype),
+        ProtoType::Enum => read_i64(r, wiretype),
+        _ => Err(DeserializeError::TypeError(format!(
+            "attempted to read int value for {:?}",
+            prototype
+        ))),
+    }
+}
+
+fn read_uint(
+    r: &mut impl Read,
+    wiretype: WireType,
+    prototype: ProtoType,
+) -> Result<u64, DeserializeError> {
+    match prototype {
+        ProtoType::Int32
+        | ProtoType::SFixed32
+        | ProtoType::Int64
+        | ProtoType::SFixed64
+        | ProtoType::SInt32
+        | ProtoType::SInt64 => Err(DeserializeError::TypeError(format!(
+            "attempted to read unsigned value for {:?}",
+            prototype
+        ))),
+        ProtoType::UInt32 | ProtoType::Fixed32 => Ok(read_u32(r, wiretype)? as u64),
+        ProtoType::UInt64 | ProtoType::Fixed64 => read_u64(r, wiretype),
+        ProtoType::Bool => read_u64(r, wiretype),
+        ProtoType::Enum => read_u64(r, wiretype),
+        _ => Err(DeserializeError::TypeError(format!(
+            "attempted to read uint value for {:?}",
+            prototype
+        ))),
+    }
 }
 
 fn decode_zigzag(n: u64) -> i64 {
@@ -74,227 +212,185 @@ fn decode_zigzag(n: u64) -> i64 {
     i64::from_le_bytes(n.to_le_bytes())
 }
 
-// TODO(klimt): Do I need the proto definition to know if it's a signed field?
-impl Deserialize for i32 {
+impl DeserializeField for i32 {
     fn deserialize_field(
         &mut self,
         prototype: ProtoType,
         wiretype: WireType,
-        r: impl Read,
-    ) -> io::Result<()> {
-        match wiretype {
-            WireType::I32 => {
-                let mut buffer: [u8; 4] = [0; 4];
-                r.read_exact(&mut buffer)?;
-                *self = i32::from_le_bytes(buffer);
-                Ok(())
-            }
-            WireType::VarInt => {
-                // TODO(klimt): Check for overflow.
-                let n = read_ivarint(r)?;
-                *self = n as i32;
-                Ok(())
-            }
-            _ => Err(io::Error::new(
-                ErrorKind::InvalidData,
-                format!("invalid wiretype for i32: {:?}", wiretype),
-            )),
-        }
-    }
-
-    fn deserialize(&mut self, r: impl Read) -> io::Result<()> {
-        let n = read_ivarint(r)?;
-        *self = n as i32;
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        // TODO(klimt): Bounds checking?
+        *self = read_int(r, wiretype, prototype)? as i32;
         Ok(())
     }
 }
 
-/*
-impl Serialize for i64 {
-    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        match pbtype {
-            ProtoType::Int64 => {
-                write_tag(w, WireType::VarInt, id)?;
-                write_ivarint(w, i64::from(*self))
-            }
-            ProtoType::SInt64 => {
-                write_tag(w, WireType::VarInt, id)?;
-                write_uvarint(w, encode_zigzag(i64::from(*self)))
-            }
-            ProtoType::SFixed64 => {
-                write_tag(w, WireType::I64, id)?;
-                w.write_all(&self.to_le_bytes())
-            }
-            _ => Err(io::Error::new(
-                ErrorKind::InvalidData,
-                format!("invalid pbtype for i64: {:?}", pbtype),
-            )),
-        }
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_ivarint(w, i64::from(*self))
-    }
-}
-
-impl Serialize for u32 {
-    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        match pbtype {
-            ProtoType::UInt32 => {
-                write_tag(w, WireType::VarInt, id)?;
-                write_uvarint(w, u64::from(*self))
-            }
-            ProtoType::Fixed32 => {
-                write_tag(w, WireType::I32, id)?;
-                w.write_all(&self.to_le_bytes())
-            }
-            _ => Err(io::Error::new(
-                ErrorKind::InvalidData,
-                format!("invalid pbtype for u32: {:?}", pbtype),
-            )),
-        }
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_uvarint(w, u64::from(*self))
-    }
-}
-
-impl Serialize for u64 {
-    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        match pbtype {
-            ProtoType::UInt64 => {
-                write_tag(w, WireType::VarInt, id)?;
-                write_uvarint(w, u64::from(*self))
-            }
-            ProtoType::Fixed64 => {
-                write_tag(w, WireType::I64, id)?;
-                w.write_all(&self.to_le_bytes())
-            }
-            _ => Err(io::Error::new(
-                ErrorKind::InvalidData,
-                format!("invalid pbtype for u64: {:?}", pbtype),
-            )),
-        }
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_uvarint(w, u64::from(*self))
-    }
-}
-
-impl Serialize for bool {
-    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::VarInt, id)?;
-        write_uvarint(w, if *self { 1 } else { 0 })
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_uvarint(w, if *self { 1 } else { 0 })
-    }
-}
-
-impl Serialize for f64 {
-    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::I64, id)?;
-        w.write_all(&self.to_le_bytes())
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&self.to_le_bytes())
-    }
-}
-
-impl Serialize for f32 {
-    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::I32, id)?;
-        w.write_all(&self.to_le_bytes())
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&self.to_le_bytes())
-    }
-}
-
-impl Serialize for String {
-    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::Len, id)?;
-        self.serialize(w)
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_uvarint(w, self.len() as u64)?;
-        w.write_all(self.as_bytes())
-    }
-}
-
-impl Serialize for str {
-    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::Len, id)?;
-        self.serialize(w)
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_uvarint(w, self.len() as u64)?;
-        w.write_all(self.as_bytes())
-    }
-}
-
-impl Serialize for Vec<u8> {
-    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::Len, id)?;
-        self.serialize(w)
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_uvarint(w, self.len() as u64)?;
-        w.write_all(&self[..])
-    }
-}
-
-impl Serialize for &[u8] {
-    fn serialize_field(&self, id: u64, _pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        write_tag(w, WireType::Len, id)?;
-        self.serialize(w)
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        write_uvarint(w, self.len() as u64)?;
-        w.write_all(&self)
-    }
-}
-
-impl<T: Serialize> Serialize for Vec<T> {
-    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        for item in self.iter() {
-            item.serialize_field(id, pbtype, w)?;
-        }
-        Ok(())
-    }
-
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        for item in self.iter() {
-            item.serialize(w)?;
-        }
+impl DeserializeField for i64 {
+    fn deserialize_field(
+        &mut self,
+        prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        *self = read_int(r, wiretype, prototype)?;
         Ok(())
     }
 }
 
-impl<T: Serialize> Serialize for Option<T> {
-    fn serialize_field(&self, id: u64, pbtype: ProtoType, w: &mut impl Write) -> io::Result<()> {
-        match &self {
-            Some(val) => val.serialize_field(id, pbtype, w),
-            None => Ok(()),
-        }
+impl DeserializeField for u32 {
+    fn deserialize_field(
+        &mut self,
+        prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        // TODO(klimt): Bounds checking?
+        *self = read_uint(r, wiretype, prototype)? as u32;
+        Ok(())
     }
+}
 
-    fn serialize(&self, w: &mut impl Write) -> io::Result<()> {
-        match &self {
-            Some(val) => val.serialize(w),
-            None => Ok(()),
+impl DeserializeField for u64 {
+    fn deserialize_field(
+        &mut self,
+        prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        *self = read_uint(r, wiretype, prototype)?;
+        Ok(())
+    }
+}
+
+impl DeserializeField for bool {
+    fn deserialize_field(
+        &mut self,
+        prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        *self = read_uint(r, wiretype, prototype)? != 0;
+        Ok(())
+    }
+}
+
+pub fn read_float(r: &mut impl Read, wiretype: WireType) -> Result<f64, DeserializeError> {
+    match wiretype {
+        WireType::I32 => {
+            let mut buffer: [u8; 4] = [0; 4];
+            r.read_exact(&mut buffer)?;
+            Ok(f32::from_le_bytes(buffer) as f64)
+        }
+        WireType::I64 => {
+            let mut buffer: [u8; 8] = [0; 8];
+            r.read_exact(&mut buffer)?;
+            Ok(f64::from_le_bytes(buffer))
+        }
+        _ => Err(DeserializeError::TypeError(format!(
+            "invalid wiretype for float: {:?}",
+            wiretype
+        ))),
+    }
+}
+
+impl DeserializeField for f64 {
+    fn deserialize_field(
+        &mut self,
+        _prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        *self = read_float(r, wiretype)?;
+        Ok(())
+    }
+}
+
+impl DeserializeField for f32 {
+    fn deserialize_field(
+        &mut self,
+        _prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        *self = read_float(r, wiretype)? as f32;
+        Ok(())
+    }
+}
+
+pub fn read_len(r: &mut impl Read) -> io::Result<Vec<u8>> {
+    let len = read_uvarint(r)?;
+    let len = len as usize;
+    let mut v = vec![0u8; len];
+    r.read_exact(&mut v[..])?;
+    Ok(v)
+}
+
+impl DeserializeField for String {
+    fn deserialize_field(
+        &mut self,
+        _prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        if let WireType::Len = wiretype {
+            let v = read_len(r)?;
+            *self = String::from_utf8(v)?;
+            Ok(())
+        } else {
+            Err(DeserializeError::TypeError(format!(
+                "invalid wiretype for string: {:?}",
+                wiretype
+            )))
         }
     }
-}*/
+}
+
+impl DeserializeField for Vec<u8> {
+    fn deserialize_field(
+        &mut self,
+        _prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        if let WireType::Len = wiretype {
+            *self = read_len(r)?;
+            Ok(())
+        } else {
+            Err(DeserializeError::TypeError(format!(
+                "invalid wiretype for Vec<u8>: {:?}",
+                wiretype
+            )))
+        }
+    }
+}
+
+impl<T: DeserializeField + Default> DeserializeField for Vec<T> {
+    fn deserialize_field(
+        &mut self,
+        prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        let mut item = T::default();
+        item.deserialize_field(prototype, wiretype, r)?;
+        self.push(item);
+        Ok(())
+    }
+}
+
+impl<T: DeserializeField + Default> DeserializeField for Option<T> {
+    fn deserialize_field(
+        &mut self,
+        prototype: ProtoType,
+        wiretype: WireType,
+        r: &mut impl Read,
+    ) -> Result<(), DeserializeError> {
+        let mut item: T = T::default();
+        item.deserialize_field(prototype, wiretype, r)?;
+        *self = Some(item);
+        Ok(())
+    }
+}
 
 impl FieldDesc {
     fn deserialize_value_clause(&self) -> TokenStream {
@@ -307,7 +403,7 @@ impl FieldDesc {
     }
 }
 
-fn derive_deserialize_struct(name: Ident, data: DataStruct) -> Result<TokenStream> {
+fn derive_deserialize_struct(name: Ident, data: DataStruct) -> anyhow::Result<TokenStream> {
     let fields = extract_fields(data)?;
 
     let fields = fields
@@ -317,23 +413,27 @@ fn derive_deserialize_struct(name: Ident, data: DataStruct) -> Result<TokenStrea
 
     let out: TokenStream = quote! {
         #[automatically_derived]
-        impl zombie::Deserialize for #name {
+        impl zombie::DeserializeField for #name {
             fn deserialize_field(
                 &mut self,
                 prototype: zombie::ProtoType,
                 wiretype: zombie::WireType,
                 r: &mut impl std::io::Read
-            ) -> std::io::Result<()> {
+            ) -> Result<(), zombie::DeserializeError> {
                 let len = zombie::read_uvarint(r)?;
-                let v = vec![0u8; len as usize];
-                r.read_exact(&mut v)
-                //self.deserialize(&mut v)
+                let len = len as usize;
+                let mut v = vec![0u8; len];
+                r.read_exact(&mut v[..])?;
+                self.deserialize(&mut &v[..])
             }
+        }
 
-            fn deserialize(&mut self, r: &mut impl std::io::Read) -> std::io::Result<()> {
+        impl zombie::Deserialize for #name {
+            fn deserialize(&mut self, r: &mut impl std::io::Read) -> Result<(), zombie::DeserializeError> {
                 while let Some((id, wiretype)) = zombie::read_tag(r)? {
                     match id {
                         #(#fields),*,
+                        _ => {},
                     }
                 }
                 Ok(())
@@ -345,19 +445,19 @@ fn derive_deserialize_struct(name: Ident, data: DataStruct) -> Result<TokenStrea
     Ok(out)
 }
 
-/*
-fn derive_serialize_enum(name: Ident, _data: DataEnum) -> Result<TokenStream> {
+fn derive_deserialize_enum(name: Ident, _data: DataEnum) -> anyhow::Result<TokenStream> {
     let out: TokenStream = quote! {
         #[automatically_derived]
-        impl zombie::Serialize for #name {
-            fn serialize_field(&self, id: u64, pbtype: zombie::ProtoType, w: &mut impl std::io::Write) -> std::io::Result<()> {
-                zombie::write_tag(w, zombie::WireType::VarInt, id)?;
-                self.serialize(w)
-            }
-
-            fn serialize(&self, w: &mut impl std::io::Write) -> std::io::Result<()> {
-                zombie::write_uvarint(w, self.clone() as u64)?;
-                std::io::Result::Ok(())
+        impl zombie::DeserializeField for #name {
+            fn deserialize_field(
+                &mut self,
+                prototype: zombie::ProtoType,
+                wiretype: zombie::WireType,
+                r: &mut impl std::io::Read,
+            ) -> Result<(), zombie::DeserializeError> {
+                let n = zombie::read_uvarint(r)?;
+                *self = #name :: try_from(n)?;
+                Ok(())
             }
         }
     }
@@ -365,13 +465,12 @@ fn derive_serialize_enum(name: Ident, _data: DataEnum) -> Result<TokenStream> {
 
     Ok(out)
 }
-*/
 
-pub fn derive_deserialize(input: DeriveInput) -> Result<TokenStream> {
+pub fn derive_deserialize(input: DeriveInput) -> anyhow::Result<TokenStream> {
     match input.data {
         Data::Struct(data) => derive_deserialize_struct(input.ident, data),
-        //Data::Enum(data) => derive_deserialize_enum(input.ident, data),
-        _ => panic!("![derive(Deserialize)] only works on structs"),
+        Data::Enum(data) => derive_deserialize_enum(input.ident, data),
+        _ => panic!("![derive(Deserialize)] only works on structs and enums"),
     }
 }
 
@@ -423,5 +522,21 @@ mod tests {
         assert_eq!(2, decode_zigzag(4));
         assert_eq!(0x7fffffff, decode_zigzag(0xfffffffe));
         assert_eq!(-0x80000000, decode_zigzag(0xffffffff));
+    }
+
+    #[test]
+    fn read_exact_into_vec() {
+        let src = vec![5u8, 4, 3, 2, 1, 0];
+        let mut dst = vec![0u8; 4];
+        (&src[..]).read_exact(&mut dst[..]).unwrap();
+        assert_eq!(vec![5u8, 4, 3, 2], dst);
+    }
+
+    #[test]
+    fn read_tag_works() {
+        let buf = [0b1001010u8];
+        let (id, wiretype) = read_tag(&mut &buf[..]).unwrap().unwrap();
+        assert_eq!(9, id);
+        assert_eq!(WireType::Len as i32, wiretype as i32);
     }
 }
