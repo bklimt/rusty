@@ -18,3 +18,5 @@ itertools = "0.10.5"
 futures = "0.3"
 rand = "0.8.5"
 serde = { version = "1.0.152", features = ["std", "derive"] }
+romero = { path = "../romero" }
+
